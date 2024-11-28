@@ -29,3 +29,10 @@ gp_relsizes_stats configuration parameters:
 | `gp_relsizes_stats.database_naptime` | int     | 0        | Using `gp_relsizes_stats.database_naptime` you can set naptime between collecting stats for each databases. Value set time in milliseconds. Default is equal to 0 milliseconds.|
 | `gp_relsizes_stats.file_naptime`     | int     | 1        | Using `gp_relsizes_stats.file_naptime` you can set naptime between each file stats calculating. Value set time in milliseconds. Default is equal to 1 millisecond.|
 
+### About collected data and tables
+| Name of tbale | Row description | Description |
+| ------------- | --------------- | ----------- |
+| relsizes_stats_schema.segment_file_sizes | (segment, relfilenode, filepath, size, mtime) | Current size and last modify time of each file of specific relation on specific segment |
+| relsizes_stats_schema.namespace_sizes | (nspname, nspsize) | Current size of namespace |
+| relsizes_stats_schema.table_sizes | (nspname, relname, relsize) | Current size of relation in specific namespace |
+| relsizes_stats_schema.table_sizes_history | (insert_date, nspname, relname, size, mtime) | Size and last modify time of relation in specific namespace with date when information was collected |
