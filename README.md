@@ -30,11 +30,9 @@ gp_relsizes_stats configuration parameters:
 | `gp_relsizes_stats.file_naptime`     | int     | 1        | Using `gp_relsizes_stats.file_naptime` you can set naptime between each file stats calculating. Value set time in milliseconds. Default is equal to 1 millisecond.|
 
 ### About collected data and tables
-All tables store actual info about database, but it will be truncated after each collecting operation restart, so for some historical data, check relsizes_stats_schema.table_sizes_history table for some non-actual info (actual for previous restart).
-
 | Name of tbale | Row description | Description |
 | ------------- | --------------- | ----------- |
-| relsizes_stats_schema.table_sizes_history | (insert_date, nspname, relname, size, mtime) | insert_date - date where rows was inserted into history table, nspname - namespace, relname - name of relation in namespace, size - size of relation, mtime - last time when relation has been modified |
-| relsizes_stats_schema.segment_file_sizes | (segment, relfilenode, filepath, size, mtime) | segment - id of segment, relfilenode - relation oid, filepath - path to file on the segment disk, size - size of file, mtime - last time when file has been modified |
-| relsizes_stats_schema.table_sizes | (nspname, relname, relsize) | nspname - namespace, relname - name of relation in namespace, relsize - size of that relation |
-| relsizes_stats_schema.namespace_sizes | (nspname, nspsize) | nspname - name of namespace, nspsize - size of that namespace |
+| relsizes_stats_schema.segment_file_sizes | (segment, relfilenode, filepath, size, mtime) | Current size and last modify time of each file of specific relation on specific segment |
+| relsizes_stats_schema.namespace_sizes | (nspname, nspsize) | Current size of namespace |
+| relsizes_stats_schema.table_sizes | (nspname, relname, relsize) | Current size of relation in specific namespace |
+| relsizes_stats_schema.table_sizes_history | (insert_date, nspname, relname, size, mtime) | Size and last modify time of relation in specific namespace with date when information was collected |
