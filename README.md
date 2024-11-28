@@ -29,3 +29,12 @@ gp_relsizes_stats configuration parameters:
 | `gp_relsizes_stats.database_naptime` | int     | 0        | Using `gp_relsizes_stats.database_naptime` you can set naptime between collecting stats for each databases. Value set time in milliseconds. Default is equal to 0 milliseconds.|
 | `gp_relsizes_stats.file_naptime`     | int     | 1        | Using `gp_relsizes_stats.file_naptime` you can set naptime between each file stats calculating. Value set time in milliseconds. Default is equal to 1 millisecond.|
 
+### About collected data and tables
+All tables store actual info about database, but it will be truncated after each collecting operation restart, so for some historical data, check relsizes_stats_schema.table_sizes_history table for some non-actual info (actual for previous restart).
+
+| Name of tbale | Description |
+| ------------- | ----------- |
+| relsizes_stats_schema.table_sizes_history | store (insert_date, nspname, relname, size, mtime) rows where insert_date - date where rows was inserted into history table, nspname - namespace, relname - name of relation in namespace, size - size of relation, mtime - last time when relation has been modified |
+| relsizes_stats_schema.segment_file_sizes | store (segment, relfilenode, filepath, size, mtime) rows where segment - id of segment, relfilenode - relation oid, filepath - path to file on the segment disk, size - size of file, mtime - last time when file has been modified |
+| relsizes_stats_schema.table_sizes | store (nspname, relname, relsize) rows where nspname - namespace, relname - name of relation in namespace, relsize - size of that relation |
+| relsizes_stats_schema.namespace_sizes | store (nspname, nspsize) rows where nspname - name of namespace, nspsize - size of that namespace |
