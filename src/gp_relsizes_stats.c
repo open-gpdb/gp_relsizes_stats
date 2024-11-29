@@ -318,7 +318,7 @@ void relsizes_database_stats_job(Datum args) {
     }
 
     sql = psprintf("INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
-                   "SELECT * FROM get_stats_for_database(%d)",
+                   "SELECT * FROM relsizes_stats_schema.get_stats_for_database(%d)",
                    MyDatabaseId);
     pgstat_report_activity(STATE_RUNNING, sql);
     retcode = SPI_execute(sql, false, 0);
