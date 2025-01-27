@@ -69,7 +69,6 @@ void relsizes_database_stats_job(Datum args);
 static int worker_restart_naptime = 0;  /* set up in _PG_init() function */
 static int worker_database_naptime = 0; /* set up in _PG_init() function */
 static int worker_file_naptime = 0;     /* set up in _PG_init() function */
-static bool extension_enabled = false;  /* set up in _PG_init() function */
 static bool bgw_enabled = false;        /* set up in _PG_init() function */
 
 static volatile sig_atomic_t got_sigterm = false;
@@ -278,7 +277,6 @@ void relsizes_database_stats_job(Datum args) {
     int retcode = 0;
     char *sql = NULL;
     char *error = NULL;
-    char *extension_enabled_option = NULL;
 
     pqsignal(SIGTERM, worker_sigterm);
     BackgroundWorkerUnblockSignals();
@@ -297,17 +295,12 @@ void relsizes_database_stats_job(Datum args) {
     }
     PushActiveSnapshot(GetTransactionSnapshot());
 
-    /* check if plugin created and extension enabled */
-    extension_enabled_option = GetConfigOptionByName("gp_relsizes_stats.enabled", NULL);
-    if (strcmp(extension_enabled_option, "on") == 0) {
-        int created = plugin_created();
-        if (created < 0) {
-            error = "relsizes_database_stats_job: SPI execute failed while looking for plugin";
-            goto finish_spi;
-        } else if (created == 0) {
-            goto finish_spi;
-        }
-    } else {
+    /* check if plugin created */
+    int created = plugin_created();
+    if (created < 0) {
+        error = "relsizes_database_stats_job: SPI execute failed while looking for plugin";
+        goto finish_spi;
+    } else if (created == 0) {
         goto finish_spi;
     }
 
@@ -648,9 +641,6 @@ static void relsizes_shmem_startup() {
 }
 
 void _PG_init(void) {
-    /* define GUC extension enable flag */
-    DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable extension flag", NULL, &extension_enabled, true,
-                             PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
     /* define GUC bgw enable flag */
     DefineCustomBoolVariable("gp_relsizes_stats.bgw_enabled", "Enable main background worker flag", NULL, &bgw_enabled,
                              false, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
