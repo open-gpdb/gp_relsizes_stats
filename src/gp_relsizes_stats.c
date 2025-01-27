@@ -69,7 +69,7 @@ void relsizes_database_stats_job(Datum args);
 static int worker_restart_naptime = 0;  /* set up in _PG_init() function */
 static int worker_database_naptime = 0; /* set up in _PG_init() function */
 static int worker_file_naptime = 0;     /* set up in _PG_init() function */
-static bool bgw_enabled = false;        /* set up in _PG_init() function */
+static bool enabled = false;            /* set up in _PG_init() function */
 
 static volatile sig_atomic_t got_sigterm = false;
 
@@ -585,8 +585,8 @@ void relsizes_collect_stats(Datum main_arg) {
     while (!got_sigterm) {
 
         /* check if background worker enabled */
-        char *bgw_enabled_option = GetConfigOptionByName("gp_relsizes_stats.bgw_enabled", NULL);
-        if (strcmp(bgw_enabled_option, "on") != 0) {
+        char *enabled_option = GetConfigOptionByName("gp_relsizes_stats.enabled", NULL);
+        if (strcmp(enabled_option, "on") != 0) {
             goto bgw_sleep;
         }
 
@@ -640,7 +640,7 @@ static void relsizes_shmem_startup() {
 
 void _PG_init(void) {
     /* define GUC bgw enable flag */
-    DefineCustomBoolVariable("gp_relsizes_stats.bgw_enabled", "Enable main background worker flag", NULL, &bgw_enabled,
+    DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled,
                              false, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
     /* define GUC naptime variables */
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,
