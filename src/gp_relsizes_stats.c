@@ -576,7 +576,6 @@ cleanup:
 void relsizes_collect_stats(Datum main_arg) {
     int retcode = 0;
     int databases_cnt;
-    int create_transaction = 1;
     Datum *databases_oids;
 
     pqsignal(SIGTERM, worker_sigterm);
@@ -592,7 +591,7 @@ void relsizes_collect_stats(Datum main_arg) {
         }
 
         /* get databases oids with database's names */
-        databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, create_transaction);
+        databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, 1);
         /* start collecting stats for databases */
         get_stats_for_databases(databases_oids, databases_cnt);
         /* free allocated memory for data about databases */
@@ -613,10 +612,9 @@ bgw_sleep:
 Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
     int databases_cnt;
     Datum *databases_oids;
-    int create_transaction = 0;
 
     /* get databases oids with database's names */
-    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, create_transaction);
+    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, 0);
     /* start collecting stats for databases */
     get_stats_for_databases(databases_oids, databases_cnt);
     /* free allocated memory for data about databases */

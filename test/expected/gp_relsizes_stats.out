@@ -24,25 +24,9 @@ SELECT size FROM relsizes_stats_schema.table_sizes_history WHERE relname = 'empl
 (1 row)
 
 -- Fill table with a lot of different rows
-DO $$
-DECLARE
-    i INT;
-BEGIN
-    FOR i IN 1..10000 LOOP
-        INSERT INTO employees (
-            first_name, 
-            last_name, 
-            department_id, 
-            date_of_birth
-        )
-        VALUES (
-            'First' || i,                        -- Generate a first name
-            'Last' || i,                         -- Generate a last name
-            (i % 10) + 1,                        -- Cycle through 10 department IDs
-            DATE '1980-01-01' + (i % 365 * 365 / 30) -- Simulated birth dates
-        );
-    END LOOP;
-END $$;
+insert into employees (first_name, last_name, department_id, date_of_birth) 
+select 'First' || i, 'Last' || i, (i % 10) + 1, DATE '1980-01-01' + (i % 365 * 365 / 30) 
+from generate_series(1, 10001)i;
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
