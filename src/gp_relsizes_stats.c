@@ -42,10 +42,12 @@
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(get_stats_for_database);
+PG_FUNCTION_INFO_V1(relsizes_collect_stats_once);
 Datum get_stats_for_database(PG_FUNCTION_ARGS);
+Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS);
 
 static void worker_sigterm(SIGNAL_ARGS);
-static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx);
+static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, int create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
 static void get_stats_for_databases(Datum *databases_oids, int databases_cnt);
@@ -67,7 +69,7 @@ void relsizes_database_stats_job(Datum args);
 static int worker_restart_naptime = 0;  /* set up in _PG_init() function */
 static int worker_database_naptime = 0; /* set up in _PG_init() function */
 static int worker_file_naptime = 0;     /* set up in _PG_init() function */
-static bool extension_enabled = false;  /* set up in _PG_init() function */
+static bool enabled = false;            /* set up in _PG_init() function */
 
 static volatile sig_atomic_t got_sigterm = false;
 
@@ -137,7 +139,7 @@ static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *h
     return status;
 }
 
-static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx) {
+static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, int create_transaction) {
     int retcode = 0;
     char *sql = "SELECT datname, oid FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'diskquota', "
                 "'gpperfmon')";
@@ -147,8 +149,10 @@ static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx) {
     *databases_cnt = 0;
 
     /* get timestamp and start transaction */
-    SetCurrentStatementStartTimestamp();
-    StartTransactionCommand();
+    if (create_transaction) {
+        SetCurrentStatementStartTimestamp();
+        StartTransactionCommand();
+    }
 
     /* connect to spi */
     retcode = SPI_connect();
@@ -156,8 +160,10 @@ static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx) {
         error = "get_databases_oids: SPI_connect failed";
         goto finish_transaction;
     }
-    PushActiveSnapshot(GetTransactionSnapshot());
-    pgstat_report_activity(STATE_RUNNING, sql);
+    if (create_transaction) {
+        PushActiveSnapshot(GetTransactionSnapshot());
+        pgstat_report_activity(STATE_RUNNING, sql);
+    }
 
     /* execute sql query to get table */
     retcode = SPI_execute(sql, true, 0);
@@ -205,10 +211,12 @@ static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx) {
 finish_spi:
     SPI_finish();
 finish_transaction:
-    PopActiveSnapshot();
-    CommitTransactionCommand();
-    pgstat_report_stat(false);
-    pgstat_report_activity(STATE_IDLE, NULL);
+    if (create_transaction) {
+        PopActiveSnapshot();
+        CommitTransactionCommand();
+        pgstat_report_stat(false);
+        pgstat_report_activity(STATE_IDLE, NULL);
+    }
 
     if (error != NULL) {
         ereport(ERROR, (errmsg("%s: %m", error)));
@@ -269,7 +277,6 @@ void relsizes_database_stats_job(Datum args) {
     int retcode = 0;
     char *sql = NULL;
     char *error = NULL;
-    char *extension_enabled_option = NULL;
 
     pqsignal(SIGTERM, worker_sigterm);
     BackgroundWorkerUnblockSignals();
@@ -288,17 +295,12 @@ void relsizes_database_stats_job(Datum args) {
     }
     PushActiveSnapshot(GetTransactionSnapshot());
 
-    /* check if plugin created and extension enabled */
-    extension_enabled_option = GetConfigOptionByName("gp_relsizes_stats.enabled", NULL);
-    if (strcmp(extension_enabled_option, "on") == 0) {
-        int created = plugin_created();
-        if (created < 0) {
-            error = "relsizes_database_stats_job: SPI execute failed while looking for plugin";
-            goto finish_spi;
-        } else if (created == 0) {
-            goto finish_spi;
-        }
-    } else {
+    /* check if plugin created */
+    int created = plugin_created();
+    if (created < 0) {
+        error = "relsizes_database_stats_job: SPI execute failed while looking for plugin";
+        goto finish_spi;
+    } else if (created == 0) {
         goto finish_spi;
     }
 
@@ -581,12 +583,20 @@ void relsizes_collect_stats(Datum main_arg) {
     BackgroundWorkerInitializeConnection("postgres", NULL);
 
     while (!got_sigterm) {
+
+        /* check if background worker enabled */
+        char *enabled_option = GetConfigOptionByName("gp_relsizes_stats.enabled", NULL);
+        if (strcmp(enabled_option, "on") != 0) {
+            goto bgw_sleep;
+        }
+
         /* get databases oids with database's names */
-        databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext);
+        databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, 1);
         /* start collecting stats for databases */
         get_stats_for_databases(databases_oids, databases_cnt);
         /* free allocated memory for data about databases */
         pfree(databases_oids);
+    bgw_sleep:
         /* sleep for restart_naptime time */
         retcode =
             WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, worker_restart_naptime);
@@ -597,6 +607,20 @@ void relsizes_collect_stats(Datum main_arg) {
             proc_exit(1);
         }
     }
+}
+
+Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
+    int databases_cnt;
+    Datum *databases_oids;
+
+    /* get databases oids with database's names */
+    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, 0);
+    /* start collecting stats for databases */
+    get_stats_for_databases(databases_oids, databases_cnt);
+    /* free allocated memory for data about databases */
+    pfree(databases_oids);
+
+    PG_RETURN_VOID();
 }
 
 static void relsizes_shmem_startup() {
@@ -615,8 +639,8 @@ static void relsizes_shmem_startup() {
 }
 
 void _PG_init(void) {
-    /* define GUC extension enable flag */
-    DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable extension flag", NULL, &extension_enabled, false,
+    /* define GUC bgw enable flag */
+    DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled, false,
                              PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
     /* define GUC naptime variables */
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,

@@ -83,3 +83,7 @@ RETURNS TABLE (segment INTEGER, relfilenode OID, filepath TEXT, size BIGINT, mti
 AS 'MODULE_PATHNAME', 'get_stats_for_database'
 LANGUAGE C STRICT EXECUTE ON ALL SEGMENTS;
 
+CREATE FUNCTION relsizes_stats_schema.relsizes_collect_stats_once()
+RETURNS void
+AS 'MODULE_PATHNAME', 'relsizes_collect_stats_once'
+LANGUAGE C STRICT EXECUTE ON MASTER;
