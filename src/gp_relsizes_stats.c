@@ -596,7 +596,7 @@ void relsizes_collect_stats(Datum main_arg) {
         get_stats_for_databases(databases_oids, databases_cnt);
         /* free allocated memory for data about databases */
         pfree(databases_oids);
-bgw_sleep:
+    bgw_sleep:
         /* sleep for restart_naptime time */
         retcode =
             WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, worker_restart_naptime);
@@ -640,8 +640,8 @@ static void relsizes_shmem_startup() {
 
 void _PG_init(void) {
     /* define GUC bgw enable flag */
-    DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled,
-                             false, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+    DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled, false,
+                             PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
     /* define GUC naptime variables */
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,
                             &worker_restart_naptime,
