@@ -47,7 +47,7 @@ Datum get_stats_for_database(PG_FUNCTION_ARGS);
 Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS);
 
 static void worker_sigterm(SIGNAL_ARGS);
-static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, int create_transaction);
+static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
 static void get_stats_for_databases(Datum *databases_oids, int databases_cnt);
@@ -139,7 +139,7 @@ static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *h
     return status;
 }
 
-static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, int create_transaction) {
+static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction) {
     int retcode = 0;
     char *sql = "SELECT datname, oid FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'diskquota', "
                 "'gpperfmon')";
@@ -591,7 +591,7 @@ void relsizes_collect_stats(Datum main_arg) {
         }
 
         /* get databases oids with database's names */
-        databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, 1);
+        databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, true);
         /* start collecting stats for databases */
         get_stats_for_databases(databases_oids, databases_cnt);
         /* free allocated memory for data about databases */
@@ -614,7 +614,7 @@ Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
     Datum *databases_oids;
 
     /* get databases oids with database's names */
-    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, 0);
+    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, false);
     /* start collecting stats for databases */
     get_stats_for_databases(databases_oids, databases_cnt);
     /* free allocated memory for data about databases */
