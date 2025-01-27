@@ -42,7 +42,9 @@
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(get_stats_for_database);
+PG_FUNCTION_INFO_V1(relsizes_collect_stats_once);
 Datum get_stats_for_database(PG_FUNCTION_ARGS);
+Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS);
 
 static void worker_sigterm(SIGNAL_ARGS);
 static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx);
@@ -597,6 +599,20 @@ void relsizes_collect_stats(Datum main_arg) {
             proc_exit(1);
         }
     }
+}
+
+Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
+    int databases_cnt;
+    Datum *databases_oids;
+
+    /* get databases oids with database's names */
+    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext);
+    /* start collecting stats for databases */
+    get_stats_for_databases(databases_oids, databases_cnt);
+    /* free allocated memory for data about databases */
+    pfree(databases_oids);
+
+    PG_RETURN_VOID();
 }
 
 static void relsizes_shmem_startup() {
