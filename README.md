@@ -29,6 +29,20 @@ gp_relsizes_stats configuration parameters:
 | `gp_relsizes_stats.database_naptime` | int     | 0        | Using `gp_relsizes_stats.database_naptime` you can set naptime between collecting stats for each databases. Value set time in milliseconds. Default is equal to 0 milliseconds.|
 | `gp_relsizes_stats.file_naptime`     | int     | 1        | Using `gp_relsizes_stats.file_naptime` you can set naptime between each file stats calculating. Value set time in milliseconds. Default is equal to 1 millisecond.|
 
+### Usage
+You can use a background worker to collect statistics, but if you sometimes need to change the format of the settings or if you don't want to collect statistics on a regular basis, you can do so. In these situations, you could set
+```
+gp_relsizes_stats.enabled = off
+```
+
+And use the function
+```
+relsizes_stats_schema.relsizes_collect_stats_once()
+```
+which can be called manually using 'select'.
+It will launch a single statistics collection procedure.
+
+
 ### About collected data and tables
 | Name of tbale | Row description | Description |
 | ------------- | --------------- | ----------- |
