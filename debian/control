@@ -1,0 +1,11 @@
+Source: gp-relsizes-stats
+Maintainer: Vladimir Rachkin <vova@kpnn.ru>
+Section: database_extension
+Priority: optional
+Build-Depends: debhelper (>= 9), greenplum-db-6
+Standards-Version: 1.0
+
+Package: gp-relsizes-stats
+Architecture: any
+Depends: greenplum-db-6
+Description: gp_relsizes_stats - an extension to track table on-disc sizes in greenplum
