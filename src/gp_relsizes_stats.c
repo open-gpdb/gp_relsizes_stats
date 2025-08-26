@@ -20,7 +20,6 @@
 #include "catalog/namespace.h"
 #include "cdb/cdbvars.h"
 #include "commands/defrem.h"
-#include "executor/spi.h"
 #include "funcapi.h"
 
 #include "utils/builtins.h"
@@ -33,6 +32,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <limits.h>
 
 #define FILEINFO_ARGS_CNT 5
 #define HOUR_TIME 3600000    /* milliseconds in hour */
@@ -78,6 +78,18 @@ static struct RelsizesSharedData *shared_data;
 
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
+/*
+ * Signal handler for SIGTERM in background worker processes.
+ *
+ * This handler is called when the postmaster requests the background worker
+ * to shut down. It sets the got_sigterm flag and wakes up the main worker
+ * loop by setting the process latch.
+ *
+ * The function follows PostgreSQL signal handling conventions:
+ * - Saves and restores errno
+ * - Uses only async-signal-safe operations
+ * - Sets a flag that the main loop can check
+ */
 static void worker_sigterm(SIGNAL_ARGS) {
     int save_errno = errno;
     got_sigterm = true;
@@ -155,6 +167,23 @@ static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *h
     return status;
 }
 
+/*
+ * Retrieve list of database names and OIDs from the catalog.
+ *
+ * This function queries pg_database to get all user databases (excluding
+ * system databases like template0, template1, diskquota, and gpperfmon).
+ * 
+ * Parameters:
+ *   databases_cnt - Output parameter, set to number of databases found
+ *   ctx - Memory context to allocate result in (for cross-call persistence)
+ *   create_transaction - Whether to create a new transaction for the query
+ *
+ * Returns:
+ *   Array of Datum pairs [name, oid, name, oid, ...] allocated in ctx,
+ *   or NULL on error. The array length is databases_cnt * 2.
+ *
+ * Note: Caller is responsible for freeing the returned memory when done.
+ */
 static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction) {
     int retcode = 0;
     char *sql = "SELECT datname, oid FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'diskquota', "
@@ -181,7 +210,7 @@ static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool cre
 
     retcode = SPI_execute(sql, true, 0);
 
-    if (retcode != SPI_OK_SELECT || SPI_processed < 0) {
+    if (retcode != SPI_OK_SELECT) {
         error = "get_databases_oids: SPI_execute failed (select datname, oid)";
         goto finish_spi;
     }
@@ -233,6 +262,21 @@ finish_transaction:
     return databases_oids;
 }
 
+/*
+ * Update the segment_file_map table with current relation file mappings.
+ *
+ * This function refreshes the mapping between relation OIDs and their
+ * physical file nodes across all segments. It first truncates the existing
+ * data and then repopulates it by querying pg_class on all segments.
+ *
+ * The mapping is essential for correlating file statistics collected
+ * from the filesystem with actual database relations.
+ *
+ * Returns:
+ *   0 on success, negative value on error
+ *
+ * Note: This function assumes it's running within an active SPI context.
+ */
 static int update_segment_file_map_table() {
     int retcode = 0;
     char *sql_truncate = "TRUNCATE TABLE relsizes_stats_schema.segment_file_map";
@@ -261,6 +305,15 @@ cleanup:
     return retcode;
 }
 
+/*
+ * Check if a character is a digit (0-9).
+ *
+ * Simple utility function used by fill_relfilenode() to parse
+ * numeric portions of filenames.
+ *
+ * Returns:
+ *   true if character is a digit, false otherwise
+ */
 static bool is_number(char symbol) { return '0' <= symbol && symbol <= '9'; }
 
 /*
@@ -269,16 +322,42 @@ static bool is_number(char symbol) { return '0' <= symbol && symbol <= '9'; }
  */
 static unsigned int fill_relfilenode(char *name) {
     unsigned int result = 0, pos = 0;
-    while (pos < strlen(name) && !is_number(name[pos])) {
+    size_t name_len = strlen(name);
+    
+    while (pos < name_len && !is_number(name[pos])) {
         ++pos;
     }
-    while (pos < strlen(name) && is_number(name[pos])) {
+    while (pos < name_len && is_number(name[pos])) {
+        /* Check for overflow to prevent integer overflow */
+        if (result > (UINT_MAX - (name[pos] - '0')) / 10) {
+            break; /* Stop on potential overflow */
+        }
         result = (result * 10 + (name[pos] - '0'));
         ++pos;
     }
     return result;
 }
 
+/*
+ * Background worker entry point for database-specific statistics collection.
+ *
+ * This function is executed by dynamically spawned background workers to
+ * collect file size statistics for a specific database. Each worker:
+ * 1. Connects to the target database (specified in shared_data->dbname)
+ * 2. Verifies the extension is installed
+ * 3. Updates the segment file mapping
+ * 4. Collects file size statistics from all segments
+ * 5. Updates the historical statistics table
+ *
+ * The function runs within its own transaction and handles errors gracefully
+ * by logging warnings rather than aborting the entire collection process.
+ *
+ * Parameters:
+ *   args - Background worker argument (currently unused)
+ *
+ * Note: This function is called via the background worker framework and
+ *       should not be called directly.
+ */
 void relsizes_database_stats_job(Datum args) {
     int retcode = 0;
     char *sql = NULL;
@@ -317,7 +396,7 @@ void relsizes_database_stats_job(Datum args) {
     char *sql_truncate = "TRUNCATE TABLE relsizes_stats_schema.segment_file_sizes";
     pgstat_report_activity(STATE_RUNNING, sql_truncate);
     retcode = SPI_execute(sql_truncate, false, 0);
-    if (retcode != SPI_OK_UTILITY || SPI_processed < 0) {
+    if (retcode != SPI_OK_UTILITY) {
         error = "relsizes_database_stats_job: SPI_execute failed (truncate segment_file_sizes)";
         goto finish_spi;
     }
@@ -354,6 +433,26 @@ finish_transaction:
     pgstat_report_activity(STATE_IDLE, NULL);
 }
 
+/*
+ * Spawn and manage a background worker for database statistics collection.
+ *
+ * This function creates a new background worker to collect statistics for
+ * a specific database. The target database name must be set in shared_data->dbname
+ * before calling this function.
+ *
+ * The function:
+ * 1. Configures a new background worker with appropriate settings
+ * 2. Registers and starts the worker
+ * 3. Waits for the worker to complete
+ * 4. Handles any errors during worker execution
+ *
+ * If the worker fails to start or encounters errors during execution,
+ * warnings are logged but the function returns normally to allow
+ * processing of remaining databases.
+ *
+ * Note: This function may take significant time to complete as it waits
+ *       for the background worker to finish processing the entire database.
+ */
 static void run_database_stats_worker() {
     bool ret;
     MemoryContext old_ctx;
@@ -392,6 +491,34 @@ static void run_database_stats_worker() {
     }
 }
 
+/*
+ * SQL-callable function to collect file statistics for a database.
+ *
+ * This function scans the filesystem directory corresponding to a database
+ * and returns statistics for all regular files found. It's designed to run
+ * on individual segments to collect local file information.
+ *
+ * The function:
+ * 1. Validates the function call context (must support returning a set)
+ * 2. Sets up a tuplestore for result collection
+ * 3. Scans the database directory (base/<dboid>/)
+ * 4. For each regular file, extracts relfilenode from filename
+ * 5. Collects file size and modification time via lstat()
+ * 6. Returns results as a set of tuples
+ *
+ * Parameters:
+ *   Database OID (int4) - identifies which database directory to scan
+ *
+ * Returns:
+ *   Set of tuples containing:
+ *   - segment: current segment ID
+ *   - relfilenode: extracted from filename
+ *   - filepath: full path to the file
+ *   - size: file size in bytes
+ *   - mtime: modification time as Unix timestamp
+ *
+ * Note: Includes configurable delays between file processing to reduce I/O load
+ */
 Datum get_stats_for_database(PG_FUNCTION_ARGS) {
     int retcode;
     int segment_id = GpIdentity.segindex;
@@ -402,7 +529,10 @@ Datum get_stats_for_database(PG_FUNCTION_ARGS) {
     char *error = NULL;
     char *file_path = NULL;
 
-    getcwd(cwd, sizeof(cwd));
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        error = "get_stats_for_database: failed to get current working directory";
+        goto finish_data;
+    }
     data_dir = psprintf("%s/base/%d", cwd, dboid);
     ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
     /* Validate function call context */
@@ -496,14 +626,36 @@ finish_data:
     return (Datum)0;
 }
 
+/*
+ * Orchestrate statistics collection across multiple databases.
+ *
+ * This function iterates through a list of databases and spawns a background
+ * worker for each one to collect file statistics. It implements load balancing
+ * by distributing the database processing naptime across all databases.
+ *
+ * The function:
+ * 1. Iterates through the provided database list
+ * 2. Sets the target database name in shared memory
+ * 3. Spawns a background worker for each database
+ * 4. Waits between databases based on configured naptime
+ * 5. Handles interrupts and postmaster death gracefully
+ *
+ * Parameters:
+ *   databases_oids - Array of [name, oid] pairs for databases to process
+ *   databases_cnt - Number of databases in the array
+ *
+ * Note: The inter-database naptime is divided by the number of databases
+ *       to maintain consistent overall collection timing.
+ */
 static void get_stats_for_databases(Datum *databases_oids, int databases_cnt) {
     for (int i = 0; i < databases_cnt; ++i) {
         int retcode = 0;
         char *dbname = NameStr(*DatumGetName(databases_oids[2 * i]));
         strncpy(shared_data->dbname, dbname, NAMEDATALEN);
+        shared_data->dbname[NAMEDATALEN] = '\0'; /* Ensure null termination */
         run_database_stats_worker();
-        retcode = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-                            (worker_database_naptime / databases_cnt));
+        int naptime = (databases_cnt > 0) ? (worker_database_naptime / databases_cnt) : worker_database_naptime;
+        retcode = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, naptime);
         ResetLatch(&MyProc->procLatch);
         CHECK_FOR_INTERRUPTS();
         /* emergency bailout if postmaster has died */
@@ -513,6 +665,20 @@ static void get_stats_for_databases(Datum *databases_oids, int databases_cnt) {
     }
 }
 
+/*
+ * Check if the gp_relsizes_stats extension is installed in the current database.
+ *
+ * This function queries pg_extension to verify that the extension has been
+ * properly installed before attempting to collect statistics. This prevents
+ * errors when the background worker tries to access extension-specific tables
+ * and functions.
+ *
+ * Returns:
+ *   Number of matching extension records (should be 1 if installed),
+ *   or -1 on query execution error
+ *
+ * Note: This function assumes it's running within an active SPI context.
+ */
 static int plugin_created() {
     char *sql = "SELECT * FROM pg_extension WHERE extname = 'gp_relsizes_stats'";
     pgstat_report_activity(STATE_RUNNING, sql);
@@ -521,6 +687,18 @@ static int plugin_created() {
     return (retcode == SPI_OK_SELECT ? SPI_processed : -1);
 }
 
+/*
+ * Clear all data from the table_sizes_history table.
+ *
+ * This function truncates the historical statistics table as part of the
+ * statistics refresh process. The table is cleared before inserting new
+ * current statistics to maintain a snapshot of table sizes at collection time.
+ *
+ * Returns:
+ *   0 on successful truncation, -1 on error
+ *
+ * Note: This function assumes it's running within an active SPI context.
+ */
 static int truncate_data_in_history() {
     char *sql = "TRUNCATE TABLE relsizes_stats_schema.table_sizes_history";
 
@@ -528,6 +706,19 @@ static int truncate_data_in_history() {
     return (SPI_execute(sql, false, 0) == SPI_OK_UTILITY ? 0 : -1);
 }
 
+/*
+ * Insert current table size statistics into the history table.
+ *
+ * This function populates the table_sizes_history table with current
+ * statistics from the table_sizes view, adding the current date as
+ * the collection timestamp. This creates a historical record of
+ * table sizes for trend analysis.
+ *
+ * Returns:
+ *   0 on successful insertion, -1 on error or if no rows were inserted
+ *
+ * Note: This function assumes it's running within an active SPI context.
+ */
 static int put_data_into_history() {
     char *sql = "INSERT INTO relsizes_stats_schema.table_sizes_history SELECT CURRENT_DATE, * FROM "
                 "relsizes_stats_schema.table_sizes";
@@ -536,6 +727,24 @@ static int put_data_into_history() {
     return (SPI_execute(sql, false, 0) == SPI_OK_INSERT && SPI_processed >= 0 ? 0 : -1);
 }
 
+/*
+ * Refresh the table_sizes_history table with current statistics.
+ *
+ * This function implements a complete refresh of the historical statistics
+ * table by first clearing all existing data and then inserting fresh
+ * statistics from the current collection. This ensures the history table
+ * contains a consistent snapshot of table sizes at the time of collection.
+ *
+ * The function performs these operations:
+ * 1. Truncates the existing history table
+ * 2. Inserts current statistics with today's date
+ *
+ * Returns:
+ *   0 on successful update, negative value on error
+ *
+ * Note: This function assumes it's running within an active SPI context.
+ *       Errors are logged as warnings but don't abort the operation.
+ */
 static int update_table_sizes_history() {
     int retcode = 0;
     char *error = NULL;
@@ -559,6 +768,32 @@ cleanup:
     return retcode;
 }
 
+/*
+ * Main background worker entry point for continuous statistics collection.
+ *
+ * This function implements the main loop for the primary background worker
+ * that periodically collects table size statistics across all databases.
+ * It runs continuously until terminated by a SIGTERM signal.
+ *
+ * The worker performs these operations in each cycle:
+ * 1. Checks if the extension is enabled via GUC parameter
+ * 2. Retrieves list of all user databases
+ * 3. Spawns background workers to collect statistics for each database
+ * 4. Sleeps for the configured restart_naptime before next cycle
+ *
+ * The function handles:
+ * - Graceful shutdown on SIGTERM
+ * - Postmaster death detection
+ * - Configuration changes (enable/disable)
+ * - Database list changes between cycles
+ * - Error recovery (continues operation if individual database fails)
+ *
+ * Parameters:
+ *   main_arg - Background worker main argument (currently unused)
+ *
+ * Note: This function should only be called via the background worker
+ *       framework and runs in the "postgres" database context.
+ */
 void relsizes_collect_stats(Datum main_arg) {
     int retcode = 0;
     int databases_cnt;
@@ -593,6 +828,31 @@ void relsizes_collect_stats(Datum main_arg) {
     }
 }
 
+/*
+ * SQL-callable function to perform one-time statistics collection.
+ *
+ * This function provides a way to manually trigger statistics collection
+ * for all databases without relying on the background worker. It's useful
+ * for on-demand collection, testing, or when the background worker is disabled.
+ *
+ * The function performs the same operations as one cycle of the main
+ * background worker:
+ * 1. Retrieves list of all user databases
+ * 2. Spawns background workers to collect statistics for each database
+ * 3. Waits for all workers to complete before returning
+ *
+ * Unlike the continuous background worker, this function:
+ * - Runs in the context of the calling session
+ * - Does not check the enabled GUC parameter
+ * - Returns after a single collection cycle
+ * - Can be called from any database where the extension is installed
+ *
+ * Returns:
+ *   void (success/failure indicated by exception or completion)
+ *
+ * Usage:
+ *   SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+ */
 Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
     int databases_cnt;
     Datum *databases_oids;
@@ -608,6 +868,28 @@ Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
     PG_RETURN_VOID();
 }
 
+/*
+ * Shared memory initialization hook for the extension.
+ *
+ * This function is called during postmaster startup to initialize
+ * shared memory structures required by the extension. It allocates
+ * and initializes the RelsizesSharedData structure used for
+ * communication between the main background worker and database-specific
+ * workers.
+ *
+ * The function:
+ * 1. Calls any previously installed shmem startup hook
+ * 2. Acquires the shared memory initialization lock
+ * 3. Allocates/finds the shared data structure
+ * 4. Initializes the structure on first startup
+ * 5. Releases the lock
+ *
+ * The shared data currently contains:
+ * - dbname: Buffer for passing target database name to workers
+ *
+ * Note: This function is installed as a shmem_startup_hook and should
+ *       not be called directly.
+ */
 static void relsizes_shmem_startup() {
     bool found;
 
@@ -623,6 +905,34 @@ static void relsizes_shmem_startup() {
     LWLockRelease(AddinShmemInitLock);
 }
 
+/*
+ * Extension initialization function.
+ *
+ * This function is called when the extension library is loaded. It performs
+ * all necessary setup for the extension including:
+ * 1. Defining GUC (configuration) parameters
+ * 2. Installing shared memory startup hook
+ * 3. Registering the main background worker
+ *
+ * GUC Parameters defined:
+ * - gp_relsizes_stats.enabled: Enable/disable the background worker
+ * - gp_relsizes_stats.restart_naptime: Delay between collection cycles (ms)
+ * - gp_relsizes_stats.database_naptime: Delay between database processing (ms)
+ * - gp_relsizes_stats.file_naptime: Delay between file processing (ms)
+ *
+ * The function only registers the background worker if called during
+ * shared_preload_libraries processing, ensuring proper initialization order.
+ *
+ * Background Worker Configuration:
+ * - Name: "gp_relsizes_stats_worker"
+ * - Entry point: relsizes_collect_stats()
+ * - Database: "postgres" (for catalog access)
+ * - Restart: Never (manual restart required)
+ * - Start time: After recovery completion
+ *
+ * Note: This function is called automatically by PostgreSQL when the
+ *       extension is loaded via shared_preload_libraries.
+ */
 void _PG_init(void) {
     /* Define GUC variables */
     DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled, false,
@@ -662,4 +972,14 @@ void _PG_init(void) {
     RegisterBackgroundWorker(&worker);
 }
 
+/*
+ * Extension cleanup function.
+ *
+ * This function is called when the extension library is unloaded.
+ * It restores the previous shared memory startup hook to maintain
+ * the hook chain integrity.
+ *
+ * Note: This function is called automatically by PostgreSQL during
+ *       extension unloading or server shutdown.
+ */
 void _PG_fini(void) { shmem_startup_hook = prev_shmem_startup_hook; }
