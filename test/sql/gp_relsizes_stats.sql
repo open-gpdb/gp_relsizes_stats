@@ -1,6 +1,8 @@
 CREATE EXTENSION gp_relsizes_stats;
 
+-- start_ignore
 DROP TABLE IF EXISTS employees;
+-- end_ignore
 CREATE TABLE employees (
     employee_id SERIAL PRIMARY KEY,
     first_name VARCHAR(50) NOT NULL,
@@ -32,3 +34,28 @@ SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 
 -- Validate that after rerun stats collection size of table has not change
 SELECT size FROM relsizes_stats_schema.table_sizes_history WHERE relname = 'employees';
+
+-- Cleanup
+DROP TABLE employees;
+
+
+--
+-- relsizes_collect_stats_once should collect files sizes without pauses
+-- The naptime value is 1ms, so the pauses take at least 10s to process 10k files.
+-- Check that relsizes_collect_stats_once completes in significantly less time.
+
+-- start_ignore
+DROP TABLE IF EXISTS t;
+-- end_ignore
+CREATE TABLE t (i int)
+DISTRIBUTED RANDOMLY
+PARTITION BY RANGE (i) (PARTITION a START (0) END (10000) EVERY (1));
+
+SELECT EXTRACT(EPOCH FROM LOCALTIMESTAMP(0)) t1 \gset
+
+SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+
+SELECT (EXTRACT(EPOCH FROM LOCALTIMESTAMP(0)) - :t1) < 5;
+
+-- Cleanup
+DROP TABLE t;
