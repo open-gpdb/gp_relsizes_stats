@@ -44,7 +44,7 @@ It will launch a single statistics collection procedure.
 
 
 ### About collected data and tables
-| Name of tbale | Row description | Description |
+| Name of table | Row description | Description |
 | ------------- | --------------- | ----------- |
 | relsizes_stats_schema.segment_file_sizes | (segment, relfilenode, filepath, size, mtime) | Current size and last modify time of each file of specific relation on specific segment |
 | relsizes_stats_schema.namespace_sizes | (nspname, nspsize) | Current size of namespace |
