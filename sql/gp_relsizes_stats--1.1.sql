@@ -78,7 +78,7 @@ CREATE OR REPLACE VIEW relsizes_stats_schema.namespace_sizes AS
 -- Here go any C or PL/SQL functions, table or view definitions etc
 -- for example:
 
-CREATE FUNCTION relsizes_stats_schema.get_stats_for_database(dboid INTEGER)
+CREATE FUNCTION relsizes_stats_schema.get_stats_for_database(dboid OID, fast BOOL)
 RETURNS TABLE (segment INTEGER, relfilenode OID, filepath TEXT, size BIGINT, mtime BIGINT)
 AS 'MODULE_PATHNAME', 'get_stats_for_database'
 LANGUAGE C STRICT EXECUTE ON ALL SEGMENTS;

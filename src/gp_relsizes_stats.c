@@ -50,8 +50,8 @@ static void worker_sigterm(SIGNAL_ARGS);
 static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
-static void get_stats_for_databases(Datum *databases_oids, int databases_cnt);
-static void run_database_stats_worker(void);
+static void get_stats_for_databases(Datum *databases_oids, int databases_cnt, bool fast);
+static void run_database_stats_worker(bool fast);
 static int plugin_created(void);
 static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle);
 static void relsizes_shmem_startup(void);
@@ -111,7 +111,7 @@ static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *h
     int rc;
     bool save_set_latch_on_sigusr1;
     int attempts = 0;
-    const int max_attempts = 300; /* maximum 30 seconds wait time (300 * 100ms) */
+    const int max_attempts = 5 * HOUR_TIME / 100; /* maximum 5 hours wait time */
 
     save_set_latch_on_sigusr1 = set_latch_on_sigusr1;
     set_latch_on_sigusr1 = true;
@@ -353,14 +353,13 @@ static unsigned int fill_relfilenode(char *name) {
  * by logging warnings rather than aborting the entire collection process.
  *
  * Parameters:
- *   args - Background worker argument (currently unused)
+ *   args - Background worker argument (make pauses or not)
  *
  * Note: This function is called via the background worker framework and
  *       should not be called directly.
  */
 void relsizes_database_stats_job(Datum args) {
     int retcode = 0;
-    char *sql = NULL;
     char *error = NULL;
 
     pqsignal(SIGTERM, worker_sigterm);
@@ -401,11 +400,14 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    sql = psprintf("INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
-                   "SELECT * FROM relsizes_stats_schema.get_stats_for_database(%d)",
-                   MyDatabaseId);
-    pgstat_report_activity(STATE_RUNNING, sql);
-    retcode = SPI_execute(sql, false, 0);
+    const char* sql_get_stats =
+        "INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
+        "SELECT * FROM relsizes_stats_schema.get_stats_for_database($1, $2)";
+    pgstat_report_activity(STATE_RUNNING, sql_get_stats);
+    retcode = SPI_execute_with_args(sql_get_stats, 2,
+                          (Oid[]){OIDOID, BOOLOID},
+                          (Datum[]){ObjectIdGetDatum(MyDatabaseId), args},
+                          NULL, false, 0);
     if (retcode != SPI_OK_INSERT) {
         error = "relsizes_database_stats_job: SPI_execute failed (insert into segment_file_sizes)";
         goto finish_spi;
@@ -418,9 +420,6 @@ void relsizes_database_stats_job(Datum args) {
     }
 
 finish_spi:
-    if (sql != NULL) {
-        pfree(sql);
-    }
     if (error != NULL) {
         ereport(WARNING, (errmsg("%s: %m", error)));
         /* Don't abort execution, continue with cleanup */
@@ -450,10 +449,13 @@ finish_transaction:
  * warnings are logged but the function returns normally to allow
  * processing of remaining databases.
  *
+ * Parameters:
+ *   fast - Don't make pauses
+ *
  * Note: This function may take significant time to complete as it waits
  *       for the background worker to finish processing the entire database.
  */
-static void run_database_stats_worker() {
+static void run_database_stats_worker(bool fast) {
     bool ret;
     MemoryContext old_ctx;
     BackgroundWorkerHandle *handle;
@@ -468,7 +470,7 @@ static void run_database_stats_worker() {
     sprintf(database_worker.bgw_library_name, "gp_relsizes_stats");
     sprintf(database_worker.bgw_function_name, "relsizes_database_stats_job");
     database_worker.bgw_notify_pid = MyProcPid;
-    database_worker.bgw_main_arg = (Datum)0;
+    database_worker.bgw_main_arg = BoolGetDatum(fast);
     database_worker.bgw_start_rule = NULL;
     snprintf(database_worker.bgw_name, BGW_MAXLEN, "database_relsizes_collector_worker for %s", shared_data->dbname);
     old_ctx = MemoryContextSwitchTo(TopMemoryContext);
@@ -480,6 +482,8 @@ static void run_database_stats_worker() {
     }
     pid_t pid;
     status = WaitForBackgroundWorkerStartup(handle, &pid);
+    if (status == BGWH_STOPPED)
+        return;
     if (status != BGWH_STARTED) {
         ereport(WARNING, (errmsg("Failed to start background worker [%s], skipping", database_worker.bgw_name)));
         return;
@@ -507,7 +511,8 @@ static void run_database_stats_worker() {
  * 6. Returns results as a set of tuples
  *
  * Parameters:
- *   Database OID (int4) - identifies which database directory to scan
+ *   Database OID (oid) - identifies which database directory to scan
+ *   Fast (bool) - When true, don't sleep between each collect-phase for files
  *
  * Returns:
  *   Set of tuples containing:
@@ -520,9 +525,9 @@ static void run_database_stats_worker() {
  * Note: Includes configurable delays between file processing to reduce I/O load
  */
 Datum get_stats_for_database(PG_FUNCTION_ARGS) {
-    int retcode;
     int segment_id = GpIdentity.segindex;
-    int dboid = PG_GETARG_INT32(0);
+    Oid dboid = PG_GETARG_OID(0);
+    bool fast = PG_GETARG_BOOL(1);
 
     char cwd[PATH_MAX];
     char *data_dir = NULL;
@@ -533,7 +538,7 @@ Datum get_stats_for_database(PG_FUNCTION_ARGS) {
         error = "get_stats_for_database: failed to get current working directory";
         goto finish_data;
     }
-    data_dir = psprintf("%s/base/%d", cwd, dboid);
+    data_dir = psprintf("%s/base/%u", cwd, dboid);
     ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
     /* Validate function call context */
     if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo)) {
@@ -601,15 +606,20 @@ Datum get_stats_for_database(PG_FUNCTION_ARGS) {
 
             tuplestore_putvalues(tupstore, tupdesc, outputValues, outputNulls);
 
-            /* Brief pause between file processing to reduce system load */
-            retcode =
-                WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, worker_file_naptime);
-            ResetLatch(&MyProc->procLatch);
+            if (fast)
+                CHECK_FOR_INTERRUPTS();
+            else {
+                /* Brief pause between file processing to reduce system load */
+                int retcode = WaitLatch(&MyProc->procLatch,
+                                WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+                                worker_file_naptime);
+                ResetLatch(&MyProc->procLatch);
 
-            CHECK_FOR_INTERRUPTS();
+                CHECK_FOR_INTERRUPTS();
 
-            if (retcode & WL_POSTMASTER_DEATH) {
-                proc_exit(1);
+                if (retcode & WL_POSTMASTER_DEATH) {
+                    proc_exit(1);
+                }
             }
         }
         pfree(file_path);
@@ -643,24 +653,29 @@ finish_data:
  * Parameters:
  *   databases_oids - Array of [name, oid] pairs for databases to process
  *   databases_cnt - Number of databases in the array
+ *   fast - Don't make pauses
  *
  * Note: The inter-database naptime is divided by the number of databases
  *       to maintain consistent overall collection timing.
  */
-static void get_stats_for_databases(Datum *databases_oids, int databases_cnt) {
+static void get_stats_for_databases(Datum *databases_oids, int databases_cnt, bool fast) {
     for (int i = 0; i < databases_cnt; ++i) {
-        int retcode = 0;
         char *dbname = NameStr(*DatumGetName(databases_oids[2 * i]));
         strncpy(shared_data->dbname, dbname, NAMEDATALEN);
         shared_data->dbname[NAMEDATALEN] = '\0'; /* Ensure null termination */
-        run_database_stats_worker();
-        int naptime = (databases_cnt > 0) ? (worker_database_naptime / databases_cnt) : worker_database_naptime;
-        retcode = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, naptime);
-        ResetLatch(&MyProc->procLatch);
-        CHECK_FOR_INTERRUPTS();
-        /* emergency bailout if postmaster has died */
-        if (retcode & WL_POSTMASTER_DEATH) {
-            proc_exit(1);
+        run_database_stats_worker(fast);
+
+        if (fast)
+            CHECK_FOR_INTERRUPTS();
+        else {
+            int naptime = (databases_cnt > 0) ? (worker_database_naptime / databases_cnt) : worker_database_naptime;
+            int retcode = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, naptime);
+            ResetLatch(&MyProc->procLatch);
+            CHECK_FOR_INTERRUPTS();
+            /* emergency bailout if postmaster has died */
+            if (retcode & WL_POSTMASTER_DEATH) {
+                proc_exit(1);
+            }
         }
     }
 }
@@ -812,7 +827,7 @@ void relsizes_collect_stats(Datum main_arg) {
 
         databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, true);
         if (databases_oids != NULL) {
-            get_stats_for_databases(databases_oids, databases_cnt);
+            get_stats_for_databases(databases_oids, databases_cnt, false);
             pfree(databases_oids);
         } else {
             ereport(WARNING, (errmsg("Failed to get database OIDs, skipping stats collection cycle")));
@@ -859,7 +874,7 @@ Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
 
     databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, false);
     if (databases_oids != NULL) {
-        get_stats_for_databases(databases_oids, databases_cnt);
+        get_stats_for_databases(databases_oids, databases_cnt, true);
         pfree(databases_oids);
     } else {
         ereport(WARNING, (errmsg("Failed to get database OIDs in relsizes_collect_stats_once")));
