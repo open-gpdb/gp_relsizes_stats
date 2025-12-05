@@ -73,3 +73,115 @@ SELECT (EXTRACT(EPOCH FROM LOCALTIMESTAMP(0)) - :t1) < 5;
 
 -- Cleanup
 DROP TABLE t;
+--
+-- Check that schema size is calculated correctly when the schema
+-- contains partitioned tables and ordinary ones.
+-- start_ignore
+DROP SCHEMA IF EXISTS test CASCADE;
+NOTICE:  schema "test" does not exist, skipping
+-- end_ignore
+CREATE SCHEMA test;
+CREATE TABLE test.t1 (i INT, j INT)
+DISTRIBUTED BY (i)
+PARTITION BY RANGE (i)
+  SUBPARTITION BY RANGE (j)
+  SUBPARTITION TEMPLATE (SUBPARTITION sp START (0) END (2) EVERY(1))
+(PARTITION p START (0) END (3) EVERY(1));
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_1" for table "t1"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_1_2_prt_sp_1" for table "t1_1_prt_p_1"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_1_2_prt_sp_2" for table "t1_1_prt_p_1"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_2" for table "t1"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_2_2_prt_sp_1" for table "t1_1_prt_p_2"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_2_2_prt_sp_2" for table "t1_1_prt_p_2"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3" for table "t1"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3_2_prt_sp_1" for table "t1_1_prt_p_3"
+NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3_2_prt_sp_2" for table "t1_1_prt_p_3"
+INSERT INTO test.t1 (i, j)
+SELECT a % 3, a % 2 FROM generate_series(0, 2 * 3 - 1) a;
+CREATE TABLE test.t2 AS SELECT 1 i DISTRIBUTED BY(i);
+SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+ relsizes_collect_stats_once 
+-----------------------------
+ 
+(1 row)
+
+SELECT size = 32768 * 2 * 3 /* t1 */ + 32768 /* t2 */
+  FROM relsizes_stats_schema.namespace_sizes
+ WHERE nspname = 'test';
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT relname, segment, own_file, size
+  FROM relsizes_stats_schema.table_files
+ WHERE nspname = 'test'
+ORDER BY relname, segment, own_file;
+         relname         | segment | own_file | size  
+-------------------------+---------+----------+-------
+ t1                      |       0 | f        |     0
+ t1                      |       0 | f        |     0
+ t1                      |       0 | f        |     0
+ t1                      |       0 | f        | 32768
+ t1                      |       0 | f        |     0
+ t1                      |       0 | f        |     0
+ t1                      |       0 | f        |     0
+ t1                      |       0 | f        | 32768
+ t1                      |       0 | f        |     0
+ t1                      |       0 | t        |     0
+ t1                      |       1 | f        |     0
+ t1                      |       1 | f        |     0
+ t1                      |       1 | f        |     0
+ t1                      |       1 | f        | 32768
+ t1                      |       1 | f        |     0
+ t1                      |       1 | f        | 32768
+ t1                      |       1 | f        | 32768
+ t1                      |       1 | f        | 32768
+ t1                      |       1 | f        |     0
+ t1                      |       1 | t        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | f        |     0
+ t1                      |       2 | t        |     0
+ t1_1_prt_p_1            |       0 | t        |     0
+ t1_1_prt_p_1            |       1 | t        |     0
+ t1_1_prt_p_1            |       2 | t        |     0
+ t1_1_prt_p_1_2_prt_sp_1 |       0 | t        |     0
+ t1_1_prt_p_1_2_prt_sp_1 |       1 | t        | 32768
+ t1_1_prt_p_1_2_prt_sp_1 |       2 | t        |     0
+ t1_1_prt_p_1_2_prt_sp_2 |       0 | t        |     0
+ t1_1_prt_p_1_2_prt_sp_2 |       1 | t        | 32768
+ t1_1_prt_p_1_2_prt_sp_2 |       2 | t        |     0
+ t1_1_prt_p_2            |       0 | t        |     0
+ t1_1_prt_p_2            |       1 | t        |     0
+ t1_1_prt_p_2            |       2 | t        |     0
+ t1_1_prt_p_2_2_prt_sp_1 |       0 | t        |     0
+ t1_1_prt_p_2_2_prt_sp_1 |       1 | t        | 32768
+ t1_1_prt_p_2_2_prt_sp_1 |       2 | t        |     0
+ t1_1_prt_p_2_2_prt_sp_2 |       0 | t        |     0
+ t1_1_prt_p_2_2_prt_sp_2 |       1 | t        | 32768
+ t1_1_prt_p_2_2_prt_sp_2 |       2 | t        |     0
+ t1_1_prt_p_3            |       0 | t        |     0
+ t1_1_prt_p_3            |       1 | t        |     0
+ t1_1_prt_p_3            |       2 | t        |     0
+ t1_1_prt_p_3_2_prt_sp_1 |       0 | t        | 32768
+ t1_1_prt_p_3_2_prt_sp_1 |       1 | t        |     0
+ t1_1_prt_p_3_2_prt_sp_1 |       2 | t        |     0
+ t1_1_prt_p_3_2_prt_sp_2 |       0 | t        | 32768
+ t1_1_prt_p_3_2_prt_sp_2 |       1 | t        |     0
+ t1_1_prt_p_3_2_prt_sp_2 |       2 | t        |     0
+ t2                      |       0 | t        |     0
+ t2                      |       1 | t        | 32768
+ t2                      |       2 | t        |     0
+(60 rows)
+
+DROP SCHEMA test CASCADE;
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to table test.t1
+drop cascades to table test.t2
