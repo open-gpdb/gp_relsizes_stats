@@ -59,3 +59,38 @@ SELECT (EXTRACT(EPOCH FROM LOCALTIMESTAMP(0)) - :t1) < 5;
 
 -- Cleanup
 DROP TABLE t;
+
+
+--
+-- Check that schema size is calculated correctly when the schema
+-- contains partitioned tables and ordinary ones.
+
+-- start_ignore
+DROP SCHEMA IF EXISTS test CASCADE;
+-- end_ignore
+CREATE SCHEMA test;
+
+CREATE TABLE test.t1 (i INT, j INT)
+DISTRIBUTED BY (i)
+PARTITION BY RANGE (i)
+  SUBPARTITION BY RANGE (j)
+  SUBPARTITION TEMPLATE (SUBPARTITION sp START (0) END (2) EVERY(1))
+(PARTITION p START (0) END (3) EVERY(1));
+
+INSERT INTO test.t1 (i, j)
+SELECT a % 3, a % 2 FROM generate_series(0, 2 * 3 - 1) a;
+
+CREATE TABLE test.t2 AS SELECT 1 i DISTRIBUTED BY(i);
+
+SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+
+SELECT size = 32768 * 2 * 3 /* t1 */ + 32768 /* t2 */
+  FROM relsizes_stats_schema.namespace_sizes
+ WHERE nspname = 'test';
+
+SELECT relname, segment, own_file, size
+  FROM relsizes_stats_schema.table_files
+ WHERE nspname = 'test'
+ORDER BY relname, segment, own_file;
+
+DROP SCHEMA test CASCADE;

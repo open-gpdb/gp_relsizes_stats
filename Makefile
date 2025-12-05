@@ -1,7 +1,7 @@
 MODULE_big      = gp_relsizes_stats
 OBJS            = ./src/gp_relsizes_stats.o
 EXTENSION       = gp_relsizes_stats
-EXTVERSION      = 1.1
+EXTVERSION      = 1.2
 DATA            = $(wildcard sql/*--*.sql)
 REGRESS         = gp_relsizes_stats
 REGRESS_OPTS    = --inputdir=test/

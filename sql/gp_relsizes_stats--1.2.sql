@@ -1,4 +1,4 @@
-/* gp_relsizes_stats--1.0.sql */
+/* gp_relsizes_stats--1.2.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION gp_relsizes_stats" to load this file. \quit
@@ -25,12 +25,12 @@ TRUNCATE TABLE relsizes_stats_schema.table_sizes_history;
 
 CREATE OR REPLACE VIEW relsizes_stats_schema.table_files AS
     WITH part_oids AS (
-        SELECT n.nspname, c1.relname, c1.oid
+        SELECT n.nspname, c1.relname, c1.oid, true own_oid
         FROM pg_class c1
         JOIN pg_namespace n ON c1.relnamespace = n.oid
         WHERE c1.reltablespace != (SELECT oid FROM pg_tablespace WHERE spcname = 'pg_global')
-        UNION
-        SELECT n.nspname, c1.relname, c2.oid
+        UNION ALL
+        SELECT n.nspname, c1.relname, c2.oid, false own_oid
         FROM pg_class c1
         JOIN pg_namespace n ON c1.relnamespace = n.oid
         JOIN pg_partition pp ON c1.oid = pp.parrelid
@@ -39,33 +39,33 @@ CREATE OR REPLACE VIEW relsizes_stats_schema.table_files AS
         WHERE c1.reltablespace != (SELECT oid FROM pg_tablespace WHERE spcname = 'pg_global')
     ),
     table_oids AS (
-        SELECT po.nspname, po.relname, po.oid, 'main' AS kind
+        SELECT po.nspname, po.relname, po.oid, po.own_oid, 'main' AS kind
             FROM part_oids po
-        UNION
-        SELECT po.nspname, po.relname, t.reltoastrelid, 'toast' AS kind
+        UNION ALL
+        SELECT po.nspname, po.relname, t.reltoastrelid, po.own_oid, 'toast' AS kind
             FROM part_oids po
             JOIN pg_class t ON po.oid = t.oid
             WHERE t.reltoastrelid > 0
-        UNION
-        SELECT po.nspname, po.relname, ti.indexrelid, 'toast_idx' AS kind
+        UNION ALL
+        SELECT po.nspname, po.relname, ti.indexrelid, po.own_oid, 'toast_idx' AS kind
             FROM part_oids po
             JOIN pg_class t ON po.oid = t.oid
             JOIN pg_index ti ON t.reltoastrelid = ti.indrelid
             WHERE t.reltoastrelid > 0
-        UNION
-        SELECT po.nspname, po.relname, ao.segrelid, 'ao' AS kind
+        UNION ALL
+        SELECT po.nspname, po.relname, ao.segrelid, po.own_oid, 'ao' AS kind
             FROM part_oids po
             JOIN pg_appendonly ao ON po.oid = ao.relid
-        UNION
-        SELECT po.nspname, po.relname, ao.visimaprelid, 'ao_vm' AS kind
+        UNION ALL
+        SELECT po.nspname, po.relname, ao.visimaprelid, po.own_oid, 'ao_vm' AS kind
             FROM part_oids po
             JOIN pg_appendonly ao ON po.oid = ao.relid
-        UNION
-        SELECT po.nspname, po.relname, ao.visimapidxid, 'ao_vm_idx' AS kind
+        UNION ALL
+        SELECT po.nspname, po.relname, ao.visimapidxid, po.own_oid, 'ao_vm_idx' AS kind
             FROM part_oids po
             JOIN pg_appendonly ao ON po.oid = ao.relid
     )
-    SELECT table_oids.nspname, table_oids.relname, m.segment, m.relfilenode, fs.filepath, kind, size, mtime
+    SELECT table_oids.nspname, table_oids.relname, m.segment, m.relfilenode, fs.filepath, kind, size, mtime, table_oids.own_oid own_file
     FROM table_oids
     JOIN relsizes_stats_schema.segment_file_map m ON table_oids.oid = m.reloid
     JOIN relsizes_stats_schema.segment_file_sizes fs ON m.segment = fs.segment AND m.relfilenode = fs.relfilenode;
@@ -74,6 +74,7 @@ CREATE OR REPLACE VIEW relsizes_stats_schema.table_sizes AS
     GROUP BY nspname, relname;
 CREATE OR REPLACE VIEW relsizes_stats_schema.namespace_sizes AS
     SELECT nspname, sum(size) AS size FROM relsizes_stats_schema.table_files
+    WHERE own_file
     GROUP BY nspname;
 -- Here go any C or PL/SQL functions, table or view definitions etc
 -- for example:
