@@ -29,6 +29,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include <assert.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -47,18 +48,16 @@ Datum get_stats_for_database(PG_FUNCTION_ARGS);
 Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS);
 
 static void worker_sigterm(SIGNAL_ARGS);
-static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
+static Oid *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
-static void get_stats_for_databases(Datum *databases_oids, int databases_cnt, bool fast);
-static void run_database_stats_worker(bool fast);
+static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast);
+static void run_database_stats_worker(bool fast, Oid db);
 static int plugin_created(void);
 static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle);
-static void relsizes_shmem_startup(void);
 static int truncate_data_in_history(void);
 static int put_data_into_history(void);
 void _PG_init(void);
-void _PG_fini(void);
 
 void relsizes_collect_stats(Datum main_arg);
 void relsizes_database_stats_job(Datum args);
@@ -71,12 +70,15 @@ static bool enabled = false;
 
 static volatile sig_atomic_t got_sigterm = false;
 
-struct RelsizesSharedData {
-    char dbname[NAMEDATALEN + 1];
-};
-static struct RelsizesSharedData *shared_data;
+typedef union DbWorkerArg {
+    Datum d;
+    struct {
+        Oid db;
+        bool fast;
+    } s;
+} DbWorkerArg;
 
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+static_assert(sizeof(Datum) == sizeof(DbWorkerArg), "Invalid size of structure in DbWorkerArg");
 
 /*
  * Signal handler for SIGTERM in background worker processes.
@@ -168,7 +170,7 @@ static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *h
 }
 
 /*
- * Retrieve list of database names and OIDs from the catalog.
+ * Retrieve list of database OIDs from the catalog.
  *
  * This function queries pg_database to get all user databases (excluding
  * system databases like template0, template1, diskquota, and gpperfmon).
@@ -179,18 +181,19 @@ static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *h
  *   create_transaction - Whether to create a new transaction for the query
  *
  * Returns:
- *   Array of Datum pairs [name, oid, name, oid, ...] allocated in ctx,
- *   or NULL on error. The array length is databases_cnt * 2.
+ *   Array of OIDs allocated in ctx, or NULL on error.
+ *   The array length is databases_cnt.
  *
  * Note: Caller is responsible for freeing the returned memory when done.
  */
-static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction) {
-    int retcode = 0;
-    char *sql = "SELECT datname, oid FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'diskquota', "
-                "'gpperfmon')";
-    char *error = NULL;
+static Oid *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction) {
+    const char *sql =
+        "SELECT oid"
+        "  FROM pg_database"
+        " WHERE datname NOT IN ('template0', 'template1', 'diskquota', 'gpperfmon')";
+    const char *error = NULL;
 
-    Datum *databases_oids = NULL;
+    Oid *databases_oids = NULL;
     *databases_cnt = 0;
 
     if (create_transaction) {
@@ -198,8 +201,7 @@ static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool cre
         StartTransactionCommand();
     }
 
-    retcode = SPI_connect();
-    if (retcode < 0) {
+    if (SPI_connect() < 0) {
         error = "get_databases_oids: SPI_connect failed";
         goto finish_transaction;
     }
@@ -208,41 +210,26 @@ static Datum *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool cre
         pgstat_report_activity(STATE_RUNNING, sql);
     }
 
-    retcode = SPI_execute(sql, true, 0);
-
-    if (retcode != SPI_OK_SELECT) {
+    if (SPI_execute(sql, true, 0) != SPI_OK_SELECT) {
         error = "get_databases_oids: SPI_execute failed (select datname, oid)";
         goto finish_spi;
     }
 
     /* Prepare tuple processing variables */
-    Datum *tuple_values = palloc0(SPI_tuptable->tupdesc->natts * sizeof(*tuple_values));
-    bool *tuple_nullable = palloc0(SPI_tuptable->tupdesc->natts * sizeof(*tuple_nullable));
 
-    bool typByVal;
-    int16 typLen;
-    char typAlign;
     *databases_cnt = SPI_processed;
     MemoryContext old_context = MemoryContextSwitchTo(ctx);
-    databases_oids = palloc0(SPI_tuptable->tupdesc->natts * (*databases_cnt) * sizeof(*databases_oids));
+    databases_oids = palloc((*databases_cnt) * sizeof(*databases_oids));
     MemoryContextSwitchTo(old_context);
 
     for (int i = 0; i < SPI_processed; ++i) {
-        HeapTuple current_tuple = SPI_tuptable->vals[i];
-        heap_deform_tuple(current_tuple, SPI_tuptable->tupdesc, tuple_values, tuple_nullable);
-        
-        old_context = MemoryContextSwitchTo(ctx);
-        /* Copy database name */
-        get_typlenbyvalalign(NAMEOID, &typLen, &typByVal, &typAlign);
-        databases_oids[2 * i] = datumCopy(tuple_values[0], typByVal, typLen);
-        /* Copy database OID */
-        get_typlenbyvalalign(INT8OID, &typLen, &typByVal, &typAlign);
-        databases_oids[2 * i + 1] = datumCopy(tuple_values[1], typByVal, typLen);
-        MemoryContextSwitchTo(old_context);
-    }
+        Datum oid_datum;
+        bool oid_nullable;
 
-    pfree(tuple_values);
-    pfree(tuple_nullable);
+        heap_deform_tuple(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, &oid_datum, &oid_nullable);
+
+        databases_oids[i] = DatumGetObjectId(oid_datum);
+    }
 
 finish_spi:
     SPI_finish();
@@ -343,7 +330,7 @@ static unsigned int fill_relfilenode(char *name) {
  *
  * This function is executed by dynamically spawned background workers to
  * collect file size statistics for a specific database. Each worker:
- * 1. Connects to the target database (specified in shared_data->dbname)
+ * 1. Connects to the target database
  * 2. Verifies the extension is installed
  * 3. Updates the segment file mapping
  * 4. Collects file size statistics from all segments
@@ -353,7 +340,8 @@ static unsigned int fill_relfilenode(char *name) {
  * by logging warnings rather than aborting the entire collection process.
  *
  * Parameters:
- *   args - Background worker argument (make pauses or not)
+ *   args - Background worker argument which contains database OID and the flag
+ *          which indicates make pauses or not
  *
  * Note: This function is called via the background worker framework and
  *       should not be called directly.
@@ -361,11 +349,12 @@ static unsigned int fill_relfilenode(char *name) {
 void relsizes_database_stats_job(Datum args) {
     int retcode = 0;
     char *error = NULL;
+    DbWorkerArg wa = { .d = args };
 
     pqsignal(SIGTERM, worker_sigterm);
     BackgroundWorkerUnblockSignals();
 
-    BackgroundWorkerInitializeConnection(shared_data->dbname, NULL);
+    BackgroundWorkerInitializeConnectionByOid(wa.s.db, InvalidOid);
 
     SetCurrentStatementStartTimestamp();
     StartTransactionCommand();
@@ -406,7 +395,7 @@ void relsizes_database_stats_job(Datum args) {
     pgstat_report_activity(STATE_RUNNING, sql_get_stats);
     retcode = SPI_execute_with_args(sql_get_stats, 2,
                           (Oid[]){OIDOID, BOOLOID},
-                          (Datum[]){ObjectIdGetDatum(MyDatabaseId), args},
+                          (Datum[]){ObjectIdGetDatum(MyDatabaseId), BoolGetDatum(wa.s.fast)},
                           NULL, false, 0);
     if (retcode != SPI_OK_INSERT) {
         error = "relsizes_database_stats_job: SPI_execute failed (insert into segment_file_sizes)";
@@ -436,8 +425,7 @@ finish_transaction:
  * Spawn and manage a background worker for database statistics collection.
  *
  * This function creates a new background worker to collect statistics for
- * a specific database. The target database name must be set in shared_data->dbname
- * before calling this function.
+ * a specific database.
  *
  * The function:
  * 1. Configures a new background worker with appropriate settings
@@ -451,11 +439,12 @@ finish_transaction:
  *
  * Parameters:
  *   fast - Don't make pauses
+ *   db - OID of the database which worker will collect statistics from
  *
  * Note: This function may take significant time to complete as it waits
  *       for the background worker to finish processing the entire database.
  */
-static void run_database_stats_worker(bool fast) {
+static void run_database_stats_worker(bool fast, Oid db) {
     bool ret;
     MemoryContext old_ctx;
     BackgroundWorkerHandle *handle;
@@ -470,9 +459,9 @@ static void run_database_stats_worker(bool fast) {
     sprintf(database_worker.bgw_library_name, "gp_relsizes_stats");
     sprintf(database_worker.bgw_function_name, "relsizes_database_stats_job");
     database_worker.bgw_notify_pid = MyProcPid;
-    database_worker.bgw_main_arg = BoolGetDatum(fast);
+    database_worker.bgw_main_arg = ((DbWorkerArg){ .s.db = db, .s.fast = fast }).d;
     database_worker.bgw_start_rule = NULL;
-    snprintf(database_worker.bgw_name, BGW_MAXLEN, "database_relsizes_collector_worker for %s", shared_data->dbname);
+    snprintf(database_worker.bgw_name, BGW_MAXLEN, "database_relsizes_collector_worker for %u", db);
     old_ctx = MemoryContextSwitchTo(TopMemoryContext);
     ret = RegisterDynamicBackgroundWorker(&database_worker, &handle);
     MemoryContextSwitchTo(old_ctx);
@@ -645,10 +634,9 @@ finish_data:
  *
  * The function:
  * 1. Iterates through the provided database list
- * 2. Sets the target database name in shared memory
- * 3. Spawns a background worker for each database
- * 4. Waits between databases based on configured naptime
- * 5. Handles interrupts and postmaster death gracefully
+ * 2. Spawns a background worker for each database
+ * 3. Waits between databases based on configured naptime
+ * 4. Handles interrupts and postmaster death gracefully
  *
  * Parameters:
  *   databases_oids - Array of [name, oid] pairs for databases to process
@@ -658,12 +646,9 @@ finish_data:
  * Note: The inter-database naptime is divided by the number of databases
  *       to maintain consistent overall collection timing.
  */
-static void get_stats_for_databases(Datum *databases_oids, int databases_cnt, bool fast) {
+static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast) {
     for (int i = 0; i < databases_cnt; ++i) {
-        char *dbname = NameStr(*DatumGetName(databases_oids[2 * i]));
-        strncpy(shared_data->dbname, dbname, NAMEDATALEN);
-        shared_data->dbname[NAMEDATALEN] = '\0'; /* Ensure null termination */
-        run_database_stats_worker(fast);
+        run_database_stats_worker(fast, databases_oids[i]);
 
         if (fast)
             CHECK_FOR_INTERRUPTS();
@@ -784,6 +769,31 @@ cleanup:
 }
 
 /*
+ * One cycle of the main background worker.
+ *
+ * The function performs these operations:
+ * 1. Retrieves list of all user databases
+ * 2. Spawns background workers to collect statistics for each database
+ * 3. Waits for all workers to complete before returning
+ *
+ * Parameters:
+ *   from_worker - true when the worker calls the function, false when
+ *                 the function is called from user query.
+ */
+static void relsizes_collect_stats_once_internal(bool from_worker) {
+    int databases_cnt;
+    Oid *databases_oids;
+
+    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, from_worker);
+    if (databases_oids != NULL) {
+        get_stats_for_databases(databases_oids, databases_cnt, !from_worker);
+        pfree(databases_oids);
+    } else {
+        ereport(WARNING, (errmsg("Failed to get database OIDs")));
+    }
+}
+
+/*
  * Main background worker entry point for continuous statistics collection.
  *
  * This function implements the main loop for the primary background worker
@@ -792,9 +802,8 @@ cleanup:
  *
  * The worker performs these operations in each cycle:
  * 1. Checks if the extension is enabled via GUC parameter
- * 2. Retrieves list of all user databases
- * 3. Spawns background workers to collect statistics for each database
- * 4. Sleeps for the configured restart_naptime before next cycle
+ * 2. Collects statistics for each user database
+ * 3. Sleeps for the configured restart_naptime before next cycle
  *
  * The function handles:
  * - Graceful shutdown on SIGTERM
@@ -811,8 +820,6 @@ cleanup:
  */
 void relsizes_collect_stats(Datum main_arg) {
     int retcode = 0;
-    int databases_cnt;
-    Datum *databases_oids;
 
     pqsignal(SIGTERM, worker_sigterm);
     BackgroundWorkerUnblockSignals();
@@ -825,13 +832,7 @@ void relsizes_collect_stats(Datum main_arg) {
             goto bgw_sleep;
         }
 
-        databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, true);
-        if (databases_oids != NULL) {
-            get_stats_for_databases(databases_oids, databases_cnt, false);
-            pfree(databases_oids);
-        } else {
-            ereport(WARNING, (errmsg("Failed to get database OIDs, skipping stats collection cycle")));
-        }
+        relsizes_collect_stats_once_internal(true);
     bgw_sleep:
         retcode =
             WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, worker_restart_naptime);
@@ -849,12 +850,8 @@ void relsizes_collect_stats(Datum main_arg) {
  * This function provides a way to manually trigger statistics collection
  * for all databases without relying on the background worker. It's useful
  * for on-demand collection, testing, or when the background worker is disabled.
- *
  * The function performs the same operations as one cycle of the main
- * background worker:
- * 1. Retrieves list of all user databases
- * 2. Spawns background workers to collect statistics for each database
- * 3. Waits for all workers to complete before returning
+ * background worker.
  *
  * Unlike the continuous background worker, this function:
  * - Runs in the context of the calling session
@@ -869,55 +866,9 @@ void relsizes_collect_stats(Datum main_arg) {
  *   SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  */
 Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
-    int databases_cnt;
-    Datum *databases_oids;
-
-    databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, false);
-    if (databases_oids != NULL) {
-        get_stats_for_databases(databases_oids, databases_cnt, true);
-        pfree(databases_oids);
-    } else {
-        ereport(WARNING, (errmsg("Failed to get database OIDs in relsizes_collect_stats_once")));
-    }
+    relsizes_collect_stats_once_internal(false);
 
     PG_RETURN_VOID();
-}
-
-/*
- * Shared memory initialization hook for the extension.
- *
- * This function is called during postmaster startup to initialize
- * shared memory structures required by the extension. It allocates
- * and initializes the RelsizesSharedData structure used for
- * communication between the main background worker and database-specific
- * workers.
- *
- * The function:
- * 1. Calls any previously installed shmem startup hook
- * 2. Acquires the shared memory initialization lock
- * 3. Allocates/finds the shared data structure
- * 4. Initializes the structure on first startup
- * 5. Releases the lock
- *
- * The shared data currently contains:
- * - dbname: Buffer for passing target database name to workers
- *
- * Note: This function is installed as a shmem_startup_hook and should
- *       not be called directly.
- */
-static void relsizes_shmem_startup() {
-    bool found;
-
-    if (prev_shmem_startup_hook)
-        prev_shmem_startup_hook();
-
-    LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
-    shared_data =
-        (struct RelsizesSharedData *)(ShmemInitStruct("relsizes_stats", sizeof(struct RelsizesSharedData), &found));
-    if (!found) {
-        memset(shared_data->dbname, 0, sizeof(shared_data->dbname));
-    }
-    LWLockRelease(AddinShmemInitLock);
 }
 
 /*
@@ -926,8 +877,7 @@ static void relsizes_shmem_startup() {
  * This function is called when the extension library is loaded. It performs
  * all necessary setup for the extension including:
  * 1. Defining GUC (configuration) parameters
- * 2. Installing shared memory startup hook
- * 3. Registering the main background worker
+ * 2. Registering the main background worker
  *
  * GUC Parameters defined:
  * - gp_relsizes_stats.enabled: Enable/disable the background worker
@@ -969,9 +919,6 @@ void _PG_init(void) {
         return;
     }
 
-    prev_shmem_startup_hook = shmem_startup_hook;
-    shmem_startup_hook = relsizes_shmem_startup;
-
     /* Configure and register main background worker */
     BackgroundWorker worker;
     memset(&worker, 0, sizeof(worker));
@@ -986,15 +933,3 @@ void _PG_init(void) {
     worker.bgw_main_arg = Int32GetDatum(0);
     RegisterBackgroundWorker(&worker);
 }
-
-/*
- * Extension cleanup function.
- *
- * This function is called when the extension library is unloaded.
- * It restores the previous shared memory startup hook to maintain
- * the hook chain integrity.
- *
- * Note: This function is called automatically by PostgreSQL during
- *       extension unloading or server shutdown.
- */
-void _PG_fini(void) { shmem_startup_hook = prev_shmem_startup_hook; }
