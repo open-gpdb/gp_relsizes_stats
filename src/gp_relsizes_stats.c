@@ -449,18 +449,18 @@ static void run_database_stats_worker(bool fast, Oid db) {
     MemoryContext old_ctx;
     BackgroundWorkerHandle *handle;
     BgwHandleStatus status;
-    BackgroundWorker database_worker;
     
     /* Configure background worker */
-    memset(&database_worker, 0, sizeof(database_worker));
-    database_worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-    database_worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
-    database_worker.bgw_restart_time = BGW_NEVER_RESTART;
-    sprintf(database_worker.bgw_library_name, "gp_relsizes_stats");
-    sprintf(database_worker.bgw_function_name, "relsizes_database_stats_job");
-    database_worker.bgw_notify_pid = MyProcPid;
-    database_worker.bgw_main_arg = ((DbWorkerArg){ .s.db = db, .s.fast = fast }).d;
-    database_worker.bgw_start_rule = NULL;
+    BackgroundWorker database_worker = {
+        .bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION,
+        .bgw_start_time = BgWorkerStart_RecoveryFinished,
+        .bgw_restart_time = BGW_NEVER_RESTART,
+        .bgw_library_name = "gp_relsizes_stats",
+        .bgw_function_name = "relsizes_database_stats_job",
+        .bgw_notify_pid = MyProcPid,
+        .bgw_main_arg = ((DbWorkerArg){ .s.db = db, .s.fast = fast }).d,
+        .bgw_start_rule = NULL,
+    };
     snprintf(database_worker.bgw_name, BGW_MAXLEN, "database_relsizes_collector_worker for %u", db);
     old_ctx = MemoryContextSwitchTo(TopMemoryContext);
     ret = RegisterDynamicBackgroundWorker(&database_worker, &handle);
@@ -557,8 +557,7 @@ Datum get_stats_for_database(PG_FUNCTION_ARGS) {
     rsinfo->setDesc = tupdesc;
 
     Datum outputValues[FILEINFO_ARGS_CNT];
-    bool outputNulls[FILEINFO_ARGS_CNT];
-    MemSet(outputNulls, 0, sizeof(outputNulls));
+    bool outputNulls[FILEINFO_ARGS_CNT] = { false };
 
     MemoryContextSwitchTo(oldcontext);
 
@@ -819,22 +818,15 @@ static void relsizes_collect_stats_once_internal(bool from_worker) {
  *       framework and runs in the "postgres" database context.
  */
 void relsizes_collect_stats(Datum main_arg) {
-    int retcode = 0;
-
     pqsignal(SIGTERM, worker_sigterm);
     BackgroundWorkerUnblockSignals();
     BackgroundWorkerInitializeConnection("postgres", NULL);
 
     while (!got_sigterm) {
+        if (enabled)
+            relsizes_collect_stats_once_internal(true);
 
-        char *enabled_option = GetConfigOptionByName("gp_relsizes_stats.enabled", NULL);
-        if (strcmp(enabled_option, "on") != 0) {
-            goto bgw_sleep;
-        }
-
-        relsizes_collect_stats_once_internal(true);
-    bgw_sleep:
-        retcode =
+        int retcode =
             WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, worker_restart_naptime);
         ResetLatch(&MyProc->procLatch);
         CHECK_FOR_INTERRUPTS();
@@ -915,21 +907,17 @@ void _PG_init(void) {
                             FILE_NAPTIME, /* 1ms delay between files */
                             0, INT_MAX, PGC_SIGHUP, 0, NULL, NULL, NULL);
 
-    if (!process_shared_preload_libraries_in_progress) {
-        return;
+    if (process_shared_preload_libraries_in_progress) {
+        /* Configure and register main background worker */
+        RegisterBackgroundWorker(&(BackgroundWorker){
+            .bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION,
+            .bgw_start_time = BgWorkerStart_RecoveryFinished,
+            .bgw_restart_time = BGW_NEVER_RESTART,
+            .bgw_library_name = "gp_relsizes_stats",
+            .bgw_function_name = "relsizes_collect_stats",
+            .bgw_notify_pid = 0,
+            .bgw_start_rule = NULL,
+            .bgw_name = "gp_relsizes_stats_worker"
+        });
     }
-
-    /* Configure and register main background worker */
-    BackgroundWorker worker;
-    memset(&worker, 0, sizeof(worker));
-    worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-    worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
-    worker.bgw_restart_time = BGW_NEVER_RESTART;
-    sprintf(worker.bgw_library_name, "gp_relsizes_stats");
-    sprintf(worker.bgw_function_name, "relsizes_collect_stats");
-    worker.bgw_notify_pid = 0;
-    worker.bgw_start_rule = NULL;
-    snprintf(worker.bgw_name, BGW_MAXLEN, "gp_relsizes_stats_worker");
-    worker.bgw_main_arg = Int32GetDatum(0);
-    RegisterBackgroundWorker(&worker);
 }
