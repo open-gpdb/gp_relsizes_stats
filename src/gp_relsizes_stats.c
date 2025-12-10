@@ -28,6 +28,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 #include <assert.h>
 #include <sys/stat.h>
@@ -390,14 +391,30 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    const char* sql_get_stats =
-        "INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
-        "SELECT * FROM relsizes_stats_schema.get_stats_for_database($1, $2)";
-    pgstat_report_activity(STATE_RUNNING, sql_get_stats);
-    retcode = SPI_execute_with_args(sql_get_stats, 2,
-                          (Oid[]){OIDOID, BOOLOID},
-                          (Datum[]){ObjectIdGetDatum(MyDatabaseId), BoolGetDatum(wa.s.fast)},
-                          NULL, false, 0);
+    /* Remove this condition after decision how to upgrade extensions is made. */
+    if (SearchSysCacheExists3(PROCNAMEARGSNSP,
+            CStringGetDatum("get_stats_for_database"),
+            PointerGetDatum((&(oidvector){ .dim1 = 1, .values = { INT4OID } })),
+            ObjectIdGetDatum(get_namespace_oid("relsizes_stats_schema", true))))
+    {
+        const char* sql_get_stats =
+            "INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
+            "SELECT * FROM relsizes_stats_schema.get_stats_for_database($1)";
+        pgstat_report_activity(STATE_RUNNING, sql_get_stats);
+        retcode = SPI_execute_with_args(sql_get_stats, 1,
+                              (Oid[]){INT4OID},
+                              (Datum[]){ObjectIdGetDatum(MyDatabaseId)},
+                              NULL, false, 0);
+    } else {
+        const char* sql_get_stats =
+            "INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
+            "SELECT * FROM relsizes_stats_schema.get_stats_for_database($1, $2)";
+        pgstat_report_activity(STATE_RUNNING, sql_get_stats);
+        retcode = SPI_execute_with_args(sql_get_stats, 2,
+                              (Oid[]){OIDOID, BOOLOID},
+                              (Datum[]){ObjectIdGetDatum(MyDatabaseId), BoolGetDatum(wa.s.fast)},
+                              NULL, false, 0);
+    }
     if (retcode != SPI_OK_INSERT) {
         error = "relsizes_database_stats_job: SPI_execute failed (insert into segment_file_sizes)";
         goto finish_spi;
@@ -517,7 +534,7 @@ static void run_database_stats_worker(bool fast, Oid db) {
 Datum get_stats_for_database(PG_FUNCTION_ARGS) {
     int segment_id = GpIdentity.segindex;
     Oid dboid = PG_GETARG_OID(0);
-    bool fast = PG_GETARG_BOOL(1);
+    bool fast = (PG_NARGS() < 2) ? false : PG_GETARG_BOOL(1);
 
     char cwd[PATH_MAX];
     char *data_dir = NULL;
