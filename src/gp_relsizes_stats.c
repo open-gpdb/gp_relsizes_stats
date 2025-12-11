@@ -351,6 +351,7 @@ void relsizes_database_stats_job(Datum args) {
     char *error = NULL;
     DbWorkerArg wa = { .d = args };
 
+    optimizer = false;
     pqsignal(SIGTERM, worker_sigterm);
     BackgroundWorkerUnblockSignals();
 
@@ -818,6 +819,7 @@ static void relsizes_collect_stats_once_internal(bool from_worker) {
  *       framework and runs in the "postgres" database context.
  */
 void relsizes_collect_stats(Datum main_arg) {
+    optimizer = false;
     pqsignal(SIGTERM, worker_sigterm);
     BackgroundWorkerUnblockSignals();
     BackgroundWorkerInitializeConnection("postgres", NULL);
