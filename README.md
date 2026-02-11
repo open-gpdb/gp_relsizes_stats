@@ -13,7 +13,7 @@ At the moment, the program is being tested only for GP6 and Linux.
 ### Installation
 Install from source:
 ```
-git clone git@github.com:yezzey-gp/gp_relsizes_stats.git
+git clone git@github.com:open-gpdb/gp_relsizes_stats.git
 cd gp_relsizes_stats
 # Build it. Building would require GP installed nearby and sourcing greenplum_path.sh
 source <path_to_gp>/greenplum_path.sh
