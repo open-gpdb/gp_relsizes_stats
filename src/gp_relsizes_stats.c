@@ -391,7 +391,7 @@ void relsizes_database_stats_job(Datum args) {
             ObjectIdGetDatum(get_namespace_oid("relsizes_stats_schema", true))))
     {
         const char* sql_get_stats =
-            "CREATE TABLE relsizes_stats_schema.segment_file_sizes_tmp as"
+            "CREATE TABLE relsizes_stats_schema.segment_file_sizes_tmp as "
             "SELECT (segment, relfilenode, filepath, size, mtime) FROM relsizes_stats_schema.get_stats_for_database($1)";
         pgstat_report_activity(STATE_RUNNING, sql_get_stats);
         retcode = SPI_execute_with_args(sql_get_stats, 1,
@@ -400,7 +400,7 @@ void relsizes_database_stats_job(Datum args) {
                               NULL, false, 0);
     } else {
         const char* sql_get_stats =
-            "CREATE TABLE relsizes_stats_schema.segment_file_sizes_tmp as"
+            "CREATE TABLE relsizes_stats_schema.segment_file_sizes_tmp as "
             "SELECT (segment, relfilenode, filepath, size, mtime) FROM relsizes_stats_schema.get_stats_for_database($1, $2)";
         pgstat_report_activity(STATE_RUNNING, sql_get_stats);
         retcode = SPI_execute_with_args(sql_get_stats, 2,
