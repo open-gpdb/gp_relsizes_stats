@@ -52,6 +52,7 @@ static void worker_sigterm(SIGNAL_ARGS);
 static Oid *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
+static int update_segment_file_sizes(void);
 static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast);
 static void run_database_stats_worker(bool fast, Oid db);
 static int plugin_created(void);
@@ -383,10 +384,16 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    char *sql_truncate = "TRUNCATE TABLE relsizes_stats_schema.segment_file_sizes";
-    pgstat_report_activity(STATE_RUNNING, sql_truncate);
-    retcode = SPI_execute(sql_truncate, false, 0);
-    if (retcode != SPI_OK_UTILITY) {
+    retcode = update_segment_file_sizes();
+    if (retcode < 0) {
+        error = "relsizes_database_stats_job: updating segment_file_sizes failed";
+    }
+    char *sql_create = "CREATE TABLE IF NOT EXISTS relsizes_stats_schema.segment_file_sizes_tmp "
+    "(segment INTEGER, relfilenode OID, filepath TEXT, size BIGINT, mtime BIGINT) "
+    "WITH (appendonly=true, OIDS=FALSE) DISTRIBUTED RANDOMLY";
+    pgstat_report_activity(STATE_RUNNING, sql_create);
+    retcode = SPI_execute(sql_create, false, 0);
+    if (retcode != SPI_OK_UTILITY && false) {
         error = "relsizes_database_stats_job: SPI_execute failed (truncate segment_file_sizes)";
         goto finish_spi;
     }
@@ -398,7 +405,7 @@ void relsizes_database_stats_job(Datum args) {
             ObjectIdGetDatum(get_namespace_oid("relsizes_stats_schema", true))))
     {
         const char* sql_get_stats =
-            "INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
+            "INSERT INTO relsizes_stats_schema.segment_file_sizes_tmp (segment, relfilenode, filepath, size, mtime) "
             "SELECT * FROM relsizes_stats_schema.get_stats_for_database($1)";
         pgstat_report_activity(STATE_RUNNING, sql_get_stats);
         retcode = SPI_execute_with_args(sql_get_stats, 1,
@@ -407,7 +414,7 @@ void relsizes_database_stats_job(Datum args) {
                               NULL, false, 0);
     } else {
         const char* sql_get_stats =
-            "INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
+            "INSERT INTO relsizes_stats_schema.segment_file_sizes_tmp (segment, relfilenode, filepath, size, mtime) "
             "SELECT * FROM relsizes_stats_schema.get_stats_for_database($1, $2)";
         pgstat_report_activity(STATE_RUNNING, sql_get_stats);
         retcode = SPI_execute_with_args(sql_get_stats, 2,
@@ -419,6 +426,39 @@ void relsizes_database_stats_job(Datum args) {
         error = "relsizes_database_stats_job: SPI_execute failed (insert into segment_file_sizes)";
         goto finish_spi;
     }
+    
+    char *sql_truncate = "TRUNCATE TABLE relsizes_stats_schema.segment_file_sizes";
+    pgstat_report_activity(STATE_RUNNING, sql_truncate);
+    retcode = SPI_execute(sql_truncate, false, 0);
+    if (retcode != SPI_OK_UTILITY) {
+        error = "relsizes_database_stats_job: SPI_execute failed (truncate segment_file_sizes)";
+        goto finish_spi;
+    }
+    char *sql_insert = "INSERT INTO relsizes_stats_schema.segment_file_sizes (segment, relfilenode, filepath, size, mtime) "
+            "SELECT * FROM relsizes_stats_schema.segment_file_sizes_tmp";
+    pgstat_report_activity(STATE_RUNNING, sql_insert);
+    retcode = SPI_execute(sql_insert, false, 0);
+    if (retcode != SPI_OK_INSERT) {
+        error = "relsizes_database_stats_job: SPI_execute failed (insert into segment_file_sizes)";
+        goto finish_spi;
+    }
+    /*
+    char *sql_rename1 = "SET search_path TO relsizes_stats_schema;ALTER TABLE segment_file_sizes RENAME TO segment_file_sizes_to_drop;";
+    char *sql_rename2 = "SET search_path TO relsizes_stats_schema;ALTER TABLE segment_file_sizes_tmp RENAME TO segment_file_sizes;";
+    pgstat_report_activity(STATE_RUNNING, sql_rename1);
+    retcode = SPI_execute(sql_rename1, false, 0);
+    pgstat_report_activity(STATE_RUNNING, sql_rename2);
+    retcode = SPI_execute(sql_rename2, false, 0);
+    if (false)
+    {
+        error = "fail to rename";
+        goto finish_spi;
+    }
+    */
+    char *sql_drop = "DROP TABLE relsizes_stats_schema.segment_file_sizes_tmp";
+    pgstat_report_activity(STATE_RUNNING, sql_drop);
+    retcode = SPI_execute(sql_drop, false, 0);
+
 
     retcode = update_table_sizes_history();
     if (retcode < 0) {
@@ -777,6 +817,21 @@ static int update_table_sizes_history() {
         error = "update_table_sizes_history: put actual data into history failed";
     }
 
+cleanup:
+    pgstat_report_activity(STATE_IDLE, NULL);
+    if (error != NULL) {
+        ereport(WARNING, (errmsg("%s: %m", error)));
+    }
+    return retcode;
+}
+
+
+static int update_segment_file_sizes(void) {
+    int retcode = 0;
+    char *error = NULL;
+    // todo
+
+    
 cleanup:
     pgstat_report_activity(STATE_IDLE, NULL);
     if (error != NULL) {
