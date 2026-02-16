@@ -43,6 +43,14 @@
 
 PG_MODULE_MAGIC;
 
+typedef union DbWorkerArg {
+    Datum d;
+    struct {
+        Oid db;
+        bool fast;
+    } s;
+} DbWorkerArg;
+
 PG_FUNCTION_INFO_V1(get_stats_for_database);
 PG_FUNCTION_INFO_V1(relsizes_collect_stats_once);
 Datum get_stats_for_database(PG_FUNCTION_ARGS);
@@ -72,13 +80,6 @@ static bool enabled = false;
 
 static volatile sig_atomic_t got_sigterm = false;
 
-typedef union DbWorkerArg {
-    Datum d;
-    struct {
-        Oid db;
-        bool fast;
-    } s;
-} DbWorkerArg;
 
 static_assert(sizeof(Datum) == sizeof(DbWorkerArg), "Invalid size of structure in DbWorkerArg");
 
@@ -384,7 +385,7 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    retcode = update_segment_file_sizes();
+    retcode = update_segment_file_sizes(wa);
     if (retcode < 0) {
         error = "relsizes_database_stats_job: updating segment_file_sizes failed";
         goto finish_spi;
