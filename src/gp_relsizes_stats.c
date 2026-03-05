@@ -56,7 +56,7 @@ static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool
 static void run_database_stats_worker(bool fast, Oid db);
 static int plugin_created(void);
 static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle);
-static int truncate_data_in_history(void);
+static int delete_data_in_history(void);
 static int put_data_into_history(void);
 void _PG_init(void);
 
@@ -254,7 +254,7 @@ finish_transaction:
  * Update the segment_file_map table with current relation file mappings.
  *
  * This function refreshes the mapping between relation OIDs and their
- * physical file nodes across all segments. It first truncates the existing
+ * physical file nodes across all segments. It first deletes the existing
  * data and then repopulates it by querying pg_class on all segments.
  *
  * The mapping is essential for correlating file statistics collected
@@ -267,14 +267,14 @@ finish_transaction:
  */
 static int update_segment_file_map_table() {
     int retcode = 0;
-    char *sql_truncate = "TRUNCATE TABLE relsizes_stats_schema.segment_file_map";
+    char *sql_delete = "DELETE FROM relsizes_stats_schema.segment_file_map";
     char *sql_insert = "INSERT INTO relsizes_stats_schema.segment_file_map SELECT gp_segment_id, oid, relfilenode FROM "
                        "gp_dist_random('pg_class')";
     char *error = NULL;
-    pgstat_report_activity(STATE_RUNNING, sql_truncate);
-    retcode = SPI_execute(sql_truncate, false, 0);
-    if (retcode != SPI_OK_UTILITY) {
-        error = "update_segment_file_map_table: failed to truncate table";
+    pgstat_report_activity(STATE_RUNNING, sql_delete);
+    retcode = SPI_execute(sql_delete, false, 0);
+    if (retcode != SPI_OK_DELETE) {
+        error = "update_segment_file_map_table: failed to delete from table";
         goto cleanup;
     }
     
@@ -383,11 +383,11 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    char *sql_truncate = "TRUNCATE TABLE relsizes_stats_schema.segment_file_sizes";
-    pgstat_report_activity(STATE_RUNNING, sql_truncate);
-    retcode = SPI_execute(sql_truncate, false, 0);
-    if (retcode != SPI_OK_UTILITY) {
-        error = "relsizes_database_stats_job: SPI_execute failed (truncate segment_file_sizes)";
+    char *sql_delete = "DELETE FROM relsizes_stats_schema.segment_file_sizes";
+    pgstat_report_activity(STATE_RUNNING, sql_delete);
+    retcode = SPI_execute(sql_delete, false, 0);
+    if (retcode != SPI_OK_DELETE) {
+        error = "relsizes_database_stats_job: SPI_execute failed (delete from segment_file_sizes)";
         goto finish_spi;
     }
 
@@ -707,7 +707,7 @@ static int plugin_created() {
 /*
  * Clear all data from the table_sizes_history table.
  *
- * This function truncates the historical statistics table as part of the
+ * This function deletes the historical statistics table as part of the
  * statistics refresh process. The table is cleared before inserting new
  * current statistics to maintain a snapshot of table sizes at collection time.
  *
@@ -716,11 +716,11 @@ static int plugin_created() {
  *
  * Note: This function assumes it's running within an active SPI context.
  */
-static int truncate_data_in_history() {
-    char *sql = "TRUNCATE TABLE relsizes_stats_schema.table_sizes_history";
+static int delete_data_in_history() {
+    char *sql = "DELETE FROM relsizes_stats_schema.table_sizes_history";
 
     pgstat_report_activity(STATE_RUNNING, sql);
-    return (SPI_execute(sql, false, 0) == SPI_OK_UTILITY ? 0 : -1);
+    return (SPI_execute(sql, false, 0) == SPI_OK_DELETE ? 0 : -1);
 }
 
 /*
@@ -753,7 +753,7 @@ static int put_data_into_history() {
  * contains a consistent snapshot of table sizes at the time of collection.
  *
  * The function performs these operations:
- * 1. Truncates the existing history table
+ * 1. Deletes from the existing history table
  * 2. Inserts current statistics with today's date
  *
  * Returns:
@@ -766,9 +766,9 @@ static int update_table_sizes_history() {
     int retcode = 0;
     char *error = NULL;
 
-    retcode = truncate_data_in_history();
+    retcode = delete_data_in_history();
     if (retcode < 0) {
-        error = "update_table_sizes_history: truncate old data failed";
+        error = "update_table_sizes_history: delete old data failed";
         goto cleanup;
     }
 
