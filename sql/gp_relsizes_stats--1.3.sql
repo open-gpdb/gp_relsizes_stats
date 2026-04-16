@@ -1,5 +1,3 @@
-/* gp_relsizes_stats--1.2.sql */
-
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION gp_relsizes_stats" to load this file. \quit
 
@@ -88,3 +86,11 @@ CREATE FUNCTION relsizes_stats_schema.relsizes_collect_stats_once()
 RETURNS void
 AS 'MODULE_PATHNAME', 'relsizes_collect_stats_once'
 LANGUAGE C STRICT EXECUTE ON MASTER;
+
+
+DO $$
+BEGIN
+    EXECUTE 'GRANT USAGE ON SCHEMA relsizes_stats_schema TO "' || session_user || '" WITH GRANT OPTION';
+    EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA relsizes_stats_schema TO "' || session_user || '" WITH GRANT OPTION';
+END
+$$;
