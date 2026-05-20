@@ -10,6 +10,8 @@ INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALU
 ('John', 'Doe', 1, '1988-06-15'),
 ('Jane', 'Smith', 2, '1990-07-20'),
 ('Emily', 'Jones', 1, '1985-08-30');
+SET gp_relsizes_stats.want_to_save_history = on;
+SET
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
@@ -185,3 +187,40 @@ DROP SCHEMA test CASCADE;
 NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to table test.t1
 drop cascades to table test.t2
+
+DROP TABLE IF EXISTS t_history_test;
+CREATE TABLE t_history_test (i INT) DISTRIBUTED BY (i);
+INSERT INTO t_history_test VALUES (1);
+-- Default is want_to_save_history = off — history don't write
+SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+ relsizes_collect_stats_once
+-----------------------------
+ 
+(1 row)
+
+SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
+ WHERE relname = 't_history_test';
+ count
+-------
+     0
+(1 row)
+
+-- Enable option - history should write
+SET gp_relsizes_stats.want_to_save_history = on;
+SET
+SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+ relsizes_collect_stats_once
+-----------------------------
+ 
+(1 row)
+
+SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
+ WHERE relname = 't_history_test';
+ count 
+-------
+     1
+(1 row)
+
+RESET gp_relsizes_stats.want_to_save_history;
+RESET
+DROP TABLE t_history_test;

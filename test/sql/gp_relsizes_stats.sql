@@ -16,6 +16,7 @@ INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALU
 ('Jane', 'Smith', 2, '1990-07-20'),
 ('Emily', 'Jones', 1, '1985-08-30');
 
+SET gp_relsizes_stats.want_to_save_history = on;
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 
 SELECT size FROM relsizes_stats_schema.table_sizes_history WHERE relname = 'employees';
@@ -94,3 +95,28 @@ SELECT relname, segment, own_file, size
 ORDER BY relname, segment, own_file;
 
 DROP SCHEMA test CASCADE;
+
+
+--
+-- Check that want_to_save_history option controls writing to table_sizes_history
+
+-- start_ignore
+DROP TABLE IF EXISTS t_history_test;
+-- end_ignore
+CREATE TABLE t_history_test (i INT) DISTRIBUTED BY (i);
+INSERT INTO t_history_test VALUES (1);
+
+-- Default is want_to_save_history = off — history don't write
+SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
+ WHERE relname = 't_history_test';
+
+-- Enable option - history should write
+SET gp_relsizes_stats.want_to_save_history = on;
+SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
+ WHERE relname = 't_history_test';
+
+-- Cleanup
+RESET gp_relsizes_stats.want_to_save_history;
+DROP TABLE t_history_test;
