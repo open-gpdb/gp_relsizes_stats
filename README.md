@@ -22,12 +22,13 @@ make && make install
 
 ### Confguration
 gp_relsizes_stats configuration parameters:
-| **Parameter** | **Type**     | **Default**  | **Default**  |
+| **Parameter** | **Type**     | **Default**  | **Description**  |
 | ---------------- | --------------- | ------------ | ------------ |
-| `gp_relsizes_stats.enabled`          | bool    | false    | Using `gp_relsizes_stats.enabled` you can enable/disable background stats collection for database where extension installed (actually enable/disable background worker which collecting stats).|
-| `gp_relsizes_stats.restart_naptime`  | int     | 21600000 | Using `gp_relsizes_stats.restart_naptime` you can set naptime between each startup of collecting process. Value set time in milliseconds. Default is equal to 6 hours.|
-| `gp_relsizes_stats.database_naptime` | int     | 0        | Using `gp_relsizes_stats.database_naptime` you can set naptime between collecting stats for each databases. Value set time in milliseconds. Default is equal to 0 milliseconds.|
-| `gp_relsizes_stats.file_naptime`     | int     | 1        | Using `gp_relsizes_stats.file_naptime` you can set naptime between each file stats calculating. Value set time in milliseconds. Default is equal to 1 millisecond.|
+| `gp_relsizes_stats.enabled`              | bool    | false    | You can enable/disable background stats collection for database where extension installed (actually enable/disable background worker which collecting stats).|
+| `gp_relsizes_stats.want_to_save_history` | bool    | false    | You can include the collection of statistics records in the history table (table_sizes_history).|
+| `gp_relsizes_stats.restart_naptime`      | int     | 21600000 | You can set naptime between each startup of collecting process. Value set time in milliseconds. Default is equal to 6 hours.|
+| `gp_relsizes_stats.database_naptime`     | int     | 0        | You can set naptime between collecting stats for each databases. Value set time in milliseconds. Default is equal to 0 milliseconds.|
+| `gp_relsizes_stats.file_naptime`         | int     | 1        | You can set naptime between each file stats calculating. Value set time in milliseconds. Default is equal to 1 millisecond.|
 
 ### Usage
 You can use a background worker to collect statistics, but if you sometimes need to change the format of the settings or if you don't want to collect statistics on a regular basis, you can do so. In these situations, you could set
