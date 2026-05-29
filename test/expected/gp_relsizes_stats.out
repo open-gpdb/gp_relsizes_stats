@@ -1,4 +1,6 @@
+\set QUIET off
 CREATE EXTENSION gp_relsizes_stats;
+CREATE EXTENSION
 CREATE TABLE employees (
     employee_id SERIAL PRIMARY KEY,
     first_name VARCHAR(50) NOT NULL,
@@ -6,10 +8,13 @@ CREATE TABLE employees (
     department_id INT,
     date_of_birth DATE
 );
+CREATE TABLE
 INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALUES
 ('John', 'Doe', 1, '1988-06-15'),
 ('Jane', 'Smith', 2, '1990-07-20'),
 ('Emily', 'Jones', 1, '1985-08-30');
+INSERT 0 3
+-- Default is want_to_save_history = off — history don't write
 SET gp_relsizes_stats.want_to_save_history = on;
 SET
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
@@ -28,6 +33,7 @@ SELECT size FROM relsizes_stats_schema.table_sizes_history WHERE relname = 'empl
 insert into employees (first_name, last_name, department_id, date_of_birth) 
 select 'First' || i, 'Last' || i, (i % 10) + 1, DATE '1980-01-01' + (i % 365 * 365 / 30) 
 from generate_series(1, 10001)i;
+INSERT 0 10001
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
@@ -56,6 +62,7 @@ SELECT size FROM relsizes_stats_schema.table_sizes_history WHERE relname = 'empl
 
 -- Cleanup
 DROP TABLE employees;
+DROP TABLE
 --
 -- relsizes_collect_stats_once should collect files sizes without pauses
 -- The naptime value is 1ms, so the pauses take at least 10s to process 10k files.
@@ -75,14 +82,12 @@ SELECT (EXTRACT(EPOCH FROM LOCALTIMESTAMP(0)) - :t1) < 5;
 
 -- Cleanup
 DROP TABLE t;
+DROP TABLE
 --
 -- Check that schema size is calculated correctly when the schema
 -- contains partitioned tables and ordinary ones.
--- start_ignore
-DROP SCHEMA IF EXISTS test CASCADE;
-NOTICE:  schema "test" does not exist, skipping
--- end_ignore
 CREATE SCHEMA test;
+CREATE SCHEMA
 CREATE TABLE test.t1 (i INT, j INT)
 DISTRIBUTED BY (i)
 PARTITION BY RANGE (i)
@@ -98,9 +103,12 @@ NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_2_2_prt_sp_2" for table 
 NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3" for table "t1"
 NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3_2_prt_sp_1" for table "t1_1_prt_p_3"
 NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3_2_prt_sp_2" for table "t1_1_prt_p_3"
+CREATE TABLE
 INSERT INTO test.t1 (i, j)
 SELECT a % 3, a % 2 FROM generate_series(0, 2 * 3 - 1) a;
+INSERT 0 6
 CREATE TABLE test.t2 AS SELECT 1 i DISTRIBUTED BY(i);
+SELECT 1
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
@@ -187,20 +195,25 @@ DROP SCHEMA test CASCADE;
 NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to table test.t1
 drop cascades to table test.t2
-
-DROP TABLE IF EXISTS t_history_test;
+DROP SCHEMA
+--
+-- Check that want_to_save_history option controls writing to table_sizes_history
 CREATE TABLE t_history_test (i INT) DISTRIBUTED BY (i);
+CREATE TABLE
 INSERT INTO t_history_test VALUES (1);
--- Default is want_to_save_history = off — history don't write
+INSERT 0 1
+-- Enable option - history should not write
+SET gp_relsizes_stats.want_to_save_history = off;
+SET
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
- relsizes_collect_stats_once
+ relsizes_collect_stats_once 
 -----------------------------
  
 (1 row)
 
 SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
  WHERE relname = 't_history_test';
- count
+ count 
 -------
      0
 (1 row)
@@ -209,7 +222,7 @@ SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
 SET gp_relsizes_stats.want_to_save_history = on;
 SET
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
- relsizes_collect_stats_once
+ relsizes_collect_stats_once 
 -----------------------------
  
 (1 row)
@@ -221,6 +234,8 @@ SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
      1
 (1 row)
 
+-- Cleanup
 RESET gp_relsizes_stats.want_to_save_history;
 RESET
 DROP TABLE t_history_test;
+DROP TABLE

@@ -53,8 +53,8 @@ static void worker_sighup(SIGNAL_ARGS);
 static Oid *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
-static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast);
-static void run_database_stats_worker(bool fast, Oid db);
+static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast, bool save_history);
+static void run_database_stats_worker(bool fast, Oid db, bool save_history);
 static int plugin_created(void);
 static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle);
 static int delete_data_in_history(void);
@@ -79,6 +79,7 @@ typedef union DbWorkerArg {
     struct {
         Oid db;
         bool fast;
+        bool save_history;
     } s;
 } DbWorkerArg;
 
@@ -431,7 +432,7 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    if (want_to_save_history) {
+    if (wa.s.save_history) {
         retcode = update_table_sizes_history();
         if (retcode < 0) {
             error = "relsizes_database_stats_job: updating tables sizes history table failed";
@@ -475,7 +476,7 @@ finish_transaction:
  * Note: This function may take significant time to complete as it waits
  *       for the background worker to finish processing the entire database.
  */
-static void run_database_stats_worker(bool fast, Oid db) {
+static void run_database_stats_worker(bool fast, Oid db, bool save_history) {
     bool ret;
     MemoryContext old_ctx;
     BackgroundWorkerHandle *handle;
@@ -489,7 +490,7 @@ static void run_database_stats_worker(bool fast, Oid db) {
         .bgw_library_name = "gp_relsizes_stats",
         .bgw_function_name = "relsizes_database_stats_job",
         .bgw_notify_pid = MyProcPid,
-        .bgw_main_arg = ((DbWorkerArg){ .s.db = db, .s.fast = fast }).d,
+        .bgw_main_arg = ((DbWorkerArg){ .s.db = db, .s.fast = fast, .s.save_history = save_history }).d,
         .bgw_start_rule = NULL,
     };
     snprintf(database_worker.bgw_name, BGW_MAXLEN, "database_relsizes_collector_worker for %u", db);
@@ -676,9 +677,9 @@ finish_data:
  * Note: The inter-database naptime is divided by the number of databases
  *       to maintain consistent overall collection timing.
  */
-static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast) {
+static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast, bool save_history) {
     for (int i = 0; i < databases_cnt; ++i) {
-        run_database_stats_worker(fast, databases_oids[i]);
+        run_database_stats_worker(fast, databases_oids[i], save_history);
 
         if (fast)
             CHECK_FOR_INTERRUPTS();
@@ -816,7 +817,7 @@ static void relsizes_collect_stats_once_internal(bool from_worker) {
 
     databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, from_worker);
     if (databases_oids != NULL) {
-        get_stats_for_databases(databases_oids, databases_cnt, !from_worker);
+        get_stats_for_databases(databases_oids, databases_cnt, !from_worker, want_to_save_history);
         pfree(databases_oids);
     } else {
         ereport(WARNING, (errmsg("Failed to get database OIDs")));
@@ -932,7 +933,7 @@ void _PG_init(void) {
     DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled, false,
                              PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
     DefineCustomBoolVariable("gp_relsizes_stats.want_to_save_history", "Enable saving table sizes to history table", NULL, &want_to_save_history, false,
-                             PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+                             PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,
                             &worker_restart_naptime,
                             6 * HOUR_TIME, /* 6 hours delay between collect-phases */

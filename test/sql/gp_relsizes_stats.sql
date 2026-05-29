@@ -1,3 +1,4 @@
+\set QUIET off
 CREATE EXTENSION gp_relsizes_stats;
 
 -- start_ignore
@@ -16,6 +17,7 @@ INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALU
 ('Jane', 'Smith', 2, '1990-07-20'),
 ('Emily', 'Jones', 1, '1985-08-30');
 
+-- Default is want_to_save_history = off — history don't write
 SET gp_relsizes_stats.want_to_save_history = on;
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 
@@ -106,7 +108,8 @@ DROP TABLE IF EXISTS t_history_test;
 CREATE TABLE t_history_test (i INT) DISTRIBUTED BY (i);
 INSERT INTO t_history_test VALUES (1);
 
--- Default is want_to_save_history = off — history don't write
+-- Enable option - history should not write
+SET gp_relsizes_stats.want_to_save_history = off;
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
  WHERE relname = 't_history_test';
