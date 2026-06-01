@@ -69,7 +69,7 @@ static int worker_restart_naptime = 0;
 static int worker_database_naptime = 0;
 static int worker_file_naptime = 0;
 static bool enabled = false;
-static bool want_to_save_history = false;
+static bool save_history = false;
 
 static volatile sig_atomic_t got_sigterm = false;
 static volatile sig_atomic_t got_sighup = false;
@@ -817,7 +817,7 @@ static void relsizes_collect_stats_once_internal(bool from_worker) {
 
     databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, from_worker);
     if (databases_oids != NULL) {
-        get_stats_for_databases(databases_oids, databases_cnt, !from_worker, want_to_save_history);
+        get_stats_for_databases(databases_oids, databases_cnt, !from_worker, save_history);
         pfree(databases_oids);
     } else {
         ereport(WARNING, (errmsg("Failed to get database OIDs")));
@@ -911,6 +911,7 @@ Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
  *
  * GUC Parameters defined:
  * - gp_relsizes_stats.enabled: Enable/disable the background worker
+ * - gp_relsizes_stats.save_history: Enable saving table sizes to history table
  * - gp_relsizes_stats.restart_naptime: Delay between collection cycles (ms)
  * - gp_relsizes_stats.database_naptime: Delay between database processing (ms)
  * - gp_relsizes_stats.file_naptime: Delay between file processing (ms)
@@ -932,8 +933,10 @@ void _PG_init(void) {
     /* Define GUC variables */
     DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled, false,
                              PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-    DefineCustomBoolVariable("gp_relsizes_stats.want_to_save_history", "Enable saving table sizes to history table", NULL, &want_to_save_history, false,
-                             PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+    DefineCustomBoolVariable("gp_relsizes_stats.save_history",
+                             "Enable saving table sizes to history table.",
+                             NULL, &save_history, false,
+                             PGC_USERSET, 0, NULL, NULL, NULL);
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,
                             &worker_restart_naptime,
                             6 * HOUR_TIME, /* 6 hours delay between collect-phases */
