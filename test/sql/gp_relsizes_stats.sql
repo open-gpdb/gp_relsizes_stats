@@ -1,4 +1,5 @@
 \set QUIET off
+SET client_min_messages TO error;
 CREATE EXTENSION gp_relsizes_stats;
 
 -- start_ignore
@@ -18,7 +19,8 @@ INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALU
 ('Emily', 'Jones', 1, '1985-08-30');
 
 -- Default is save_history = off — history don't write
-SET gp_relsizes_stats.save_history = on;
+ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
+SELECT pg_reload_conf();
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 
 SELECT size FROM relsizes_stats_schema.table_sizes_history WHERE relname = 'employees';
@@ -108,18 +110,21 @@ DROP TABLE IF EXISTS t_history_test;
 CREATE TABLE t_history_test (i INT) DISTRIBUTED BY (i);
 INSERT INTO t_history_test VALUES (1);
 
--- Enable option - history should not write
-SET gp_relsizes_stats.save_history = off;
+-- Disable option - history should not write
+ALTER SYSTEM RESET gp_relsizes_stats.save_history;
+SELECT pg_reload_conf();
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
  WHERE relname = 't_history_test';
 
 -- Enable option - history should write
-SET gp_relsizes_stats.save_history = on;
+ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
+SELECT pg_reload_conf();
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
  WHERE relname = 't_history_test';
 
 -- Cleanup
-RESET gp_relsizes_stats.save_history;
+ALTER SYSTEM RESET gp_relsizes_stats.save_history;
+SELECT pg_reload_conf();
 DROP TABLE t_history_test;

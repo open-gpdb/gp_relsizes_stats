@@ -1,4 +1,6 @@
 \set QUIET off
+SET client_min_messages TO error;
+SET
 CREATE EXTENSION gp_relsizes_stats;
 CREATE EXTENSION
 CREATE TABLE employees (
@@ -15,8 +17,14 @@ INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALU
 ('Emily', 'Jones', 1, '1985-08-30');
 INSERT 0 3
 -- Default is save_history = off — history don't write
-SET gp_relsizes_stats.save_history = on;
-SET
+ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
+ALTER SYSTEM
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
@@ -94,15 +102,6 @@ PARTITION BY RANGE (i)
   SUBPARTITION BY RANGE (j)
   SUBPARTITION TEMPLATE (SUBPARTITION sp START (0) END (2) EVERY(1))
 (PARTITION p START (0) END (3) EVERY(1));
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_1" for table "t1"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_1_2_prt_sp_1" for table "t1_1_prt_p_1"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_1_2_prt_sp_2" for table "t1_1_prt_p_1"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_2" for table "t1"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_2_2_prt_sp_1" for table "t1_1_prt_p_2"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_2_2_prt_sp_2" for table "t1_1_prt_p_2"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3" for table "t1"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3_2_prt_sp_1" for table "t1_1_prt_p_3"
-NOTICE:  CREATE TABLE will create partition "t1_1_prt_p_3_2_prt_sp_2" for table "t1_1_prt_p_3"
 CREATE TABLE
 INSERT INTO test.t1 (i, j)
 SELECT a % 3, a % 2 FROM generate_series(0, 2 * 3 - 1) a;
@@ -192,19 +191,26 @@ ORDER BY relname, segment, own_file;
 (60 rows)
 
 DROP SCHEMA test CASCADE;
-NOTICE:  drop cascades to 2 other objects
-DETAIL:  drop cascades to table test.t1
-drop cascades to table test.t2
 DROP SCHEMA
 --
 -- Check that save_history option controls writing to table_sizes_history
+-- start_ignore
+DROP TABLE IF EXISTS t_history_test;
+DROP TABLE
+-- end_ignore
 CREATE TABLE t_history_test (i INT) DISTRIBUTED BY (i);
 CREATE TABLE
 INSERT INTO t_history_test VALUES (1);
 INSERT 0 1
--- Enable option - history should not write
-SET gp_relsizes_stats.save_history = off;
-SET
+-- Disable option - history should not write
+ALTER SYSTEM RESET gp_relsizes_stats.save_history;
+ALTER SYSTEM
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
@@ -219,8 +225,14 @@ SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
 (1 row)
 
 -- Enable option - history should write
-SET gp_relsizes_stats.save_history = on;
-SET
+ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
+ALTER SYSTEM
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
@@ -235,7 +247,13 @@ SELECT count(*) FROM relsizes_stats_schema.table_sizes_history
 (1 row)
 
 -- Cleanup
-RESET gp_relsizes_stats.save_history;
-RESET
+ALTER SYSTEM RESET gp_relsizes_stats.save_history;
+ALTER SYSTEM
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
 DROP TABLE t_history_test;
 DROP TABLE

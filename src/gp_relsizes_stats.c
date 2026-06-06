@@ -369,6 +369,7 @@ void relsizes_database_stats_job(Datum args) {
     BackgroundWorkerUnblockSignals();
 
     BackgroundWorkerInitializeConnectionByOid(wa.s.db, InvalidOid);
+    ProcessConfigFile(PGC_SIGHUP);
 
     SetCurrentStatementStartTimestamp();
     StartTransactionCommand();
@@ -432,7 +433,16 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    if (wa.s.save_history) {
+    /*
+     * Use the freshly re-read GUC value rather than wa.s.save_history that
+     * was packed by the QD backend before its own SIGHUP could be
+     * processed. This avoids a race where the test does
+     *   ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
+     *   SELECT pg_reload_conf();
+     *   SELECT relsizes_stats_schema.relsizes_collect_stats_once();
+     * and the third statement still sees the old, stale value on the QD.
+     */
+    if (save_history) {
         retcode = update_table_sizes_history();
         if (retcode < 0) {
             error = "relsizes_database_stats_job: updating tables sizes history table failed";
@@ -936,7 +946,7 @@ void _PG_init(void) {
     DefineCustomBoolVariable("gp_relsizes_stats.save_history",
                              "Enable saving table sizes to history table.",
                              NULL, &save_history, false,
-                             PGC_USERSET, 0, NULL, NULL, NULL);
+                             PGC_SIGHUP, 0, NULL, NULL, NULL);
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,
                             &worker_restart_naptime,
                             6 * HOUR_TIME, /* 6 hours delay between collect-phases */
