@@ -49,6 +49,7 @@ Datum get_stats_for_database(PG_FUNCTION_ARGS);
 Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS);
 
 static void worker_sigterm(SIGNAL_ARGS);
+static void worker_sighup(SIGNAL_ARGS);
 static Oid *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
@@ -70,6 +71,7 @@ static int worker_file_naptime = 0;
 static bool enabled = false;
 
 static volatile sig_atomic_t got_sigterm = false;
+static volatile sig_atomic_t got_sighup = false;
 
 typedef union DbWorkerArg {
     Datum d;
@@ -82,20 +84,27 @@ typedef union DbWorkerArg {
 static_assert(sizeof(Datum) == sizeof(DbWorkerArg), "Invalid size of structure in DbWorkerArg");
 
 /*
- * Signal handler for SIGTERM in background worker processes.
- *
- * This handler is called when the postmaster requests the background worker
- * to shut down. It sets the got_sigterm flag and wakes up the main worker
- * loop by setting the process latch.
- *
- * The function follows PostgreSQL signal handling conventions:
- * - Saves and restores errno
- * - Uses only async-signal-safe operations
- * - Sets a flag that the main loop can check
+ * Signal handler for SIGTERM
+ *		Set a flag to let the main loop to terminate, and set our latch to wake
+ *		it up.
  */
 static void worker_sigterm(SIGNAL_ARGS) {
     int save_errno = errno;
     got_sigterm = true;
+    if (MyProc) {
+        SetLatch(&MyProc->procLatch);
+    }
+    errno = save_errno;
+}
+
+/*
+ * Signal handler for SIGHUP
+ *		Set a flag to tell the main loop to reread the config file, and set
+ *		our latch to wake it up.
+ */
+static void worker_sighup(SIGNAL_ARGS) {
+    int save_errno = errno;
+    got_sighup = true;
     if (MyProc) {
         SetLatch(&MyProc->procLatch);
     }
@@ -354,6 +363,7 @@ void relsizes_database_stats_job(Datum args) {
 
     optimizer = false;
     pqsignal(SIGTERM, worker_sigterm);
+    pqsignal(SIGHUP, worker_sighup);
     BackgroundWorkerUnblockSignals();
 
     BackgroundWorkerInitializeConnectionByOid(wa.s.db, InvalidOid);
@@ -838,10 +848,15 @@ static void relsizes_collect_stats_once_internal(bool from_worker) {
 void relsizes_collect_stats(Datum main_arg) {
     optimizer = false;
     pqsignal(SIGTERM, worker_sigterm);
+    pqsignal(SIGHUP, worker_sighup);
     BackgroundWorkerUnblockSignals();
     BackgroundWorkerInitializeConnection("postgres", NULL);
 
     while (!got_sigterm) {
+        if (got_sighup) {
+            got_sighup = false;
+            ProcessConfigFile(PGC_SIGHUP);
+        }
         if (enabled)
             relsizes_collect_stats_once_internal(true);
 
