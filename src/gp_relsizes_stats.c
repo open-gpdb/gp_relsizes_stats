@@ -53,16 +53,16 @@ static void worker_sighup(SIGNAL_ARGS);
 static Oid *get_databases_oids(int *databases_cnt, MemoryContext ctx, bool create_transaction);
 static int update_segment_file_map_table(void);
 static int update_table_sizes_history(void);
-static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast, bool save_history);
-static void run_database_stats_worker(bool fast, Oid db, bool save_history);
+static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast);
+static void run_database_stats_worker(bool fast, Oid db);
 static int plugin_created(void);
 static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle);
 static int delete_data_in_history(void);
 static int put_data_into_history(void);
 void _PG_init(void);
 
-void relsizes_collect_stats(Datum main_arg);
-void relsizes_database_stats_job(Datum args);
+PGDLLEXPORT void relsizes_collect_stats(Datum main_arg);
+PGDLLEXPORT void relsizes_database_stats_job(Datum args);
 
 /* Global variables */
 static int worker_restart_naptime = 0;
@@ -79,7 +79,6 @@ typedef union DbWorkerArg {
     struct {
         Oid db;
         bool fast;
-        bool save_history;
     } s;
 } DbWorkerArg;
 
@@ -369,7 +368,6 @@ void relsizes_database_stats_job(Datum args) {
     BackgroundWorkerUnblockSignals();
 
     BackgroundWorkerInitializeConnectionByOid(wa.s.db, InvalidOid);
-    ProcessConfigFile(PGC_SIGHUP);
 
     SetCurrentStatementStartTimestamp();
     StartTransactionCommand();
@@ -433,15 +431,6 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    /*
-     * Use the freshly re-read GUC value rather than wa.s.save_history that
-     * was packed by the QD backend before its own SIGHUP could be
-     * processed. This avoids a race where the test does
-     *   ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
-     *   SELECT pg_reload_conf();
-     *   SELECT relsizes_stats_schema.relsizes_collect_stats_once();
-     * and the third statement still sees the old, stale value on the QD.
-     */
     if (save_history) {
         retcode = update_table_sizes_history();
         if (retcode < 0) {
@@ -486,7 +475,7 @@ finish_transaction:
  * Note: This function may take significant time to complete as it waits
  *       for the background worker to finish processing the entire database.
  */
-static void run_database_stats_worker(bool fast, Oid db, bool save_history) {
+static void run_database_stats_worker(bool fast, Oid db) {
     bool ret;
     MemoryContext old_ctx;
     BackgroundWorkerHandle *handle;
@@ -500,7 +489,7 @@ static void run_database_stats_worker(bool fast, Oid db, bool save_history) {
         .bgw_library_name = "gp_relsizes_stats",
         .bgw_function_name = "relsizes_database_stats_job",
         .bgw_notify_pid = MyProcPid,
-        .bgw_main_arg = ((DbWorkerArg){ .s.db = db, .s.fast = fast, .s.save_history = save_history }).d,
+        .bgw_main_arg = ((DbWorkerArg){ .s.db = db, .s.fast = fast }).d,
         .bgw_start_rule = NULL,
     };
     snprintf(database_worker.bgw_name, BGW_MAXLEN, "database_relsizes_collector_worker for %u", db);
@@ -687,9 +676,9 @@ finish_data:
  * Note: The inter-database naptime is divided by the number of databases
  *       to maintain consistent overall collection timing.
  */
-static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast, bool save_history) {
+static void get_stats_for_databases(Oid *databases_oids, int databases_cnt, bool fast) {
     for (int i = 0; i < databases_cnt; ++i) {
-        run_database_stats_worker(fast, databases_oids[i], save_history);
+        run_database_stats_worker(fast, databases_oids[i]);
 
         if (fast)
             CHECK_FOR_INTERRUPTS();
@@ -827,7 +816,7 @@ static void relsizes_collect_stats_once_internal(bool from_worker) {
 
     databases_oids = get_databases_oids(&databases_cnt, CurrentMemoryContext, from_worker);
     if (databases_oids != NULL) {
-        get_stats_for_databases(databases_oids, databases_cnt, !from_worker, save_history);
+        get_stats_for_databases(databases_oids, databases_cnt, !from_worker);
         pfree(databases_oids);
     } else {
         ereport(WARNING, (errmsg("Failed to get database OIDs")));
