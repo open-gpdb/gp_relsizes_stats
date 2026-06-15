@@ -84,16 +84,9 @@ typedef union DbWorkerArg {
 static_assert(sizeof(Datum) == sizeof(DbWorkerArg), "Invalid size of structure in DbWorkerArg");
 
 /*
- * Signal handler for SIGTERM in background worker processes.
- *
- * This handler is called when the postmaster requests the background worker
- * to shut down. It sets the got_sigterm flag and wakes up the main worker
- * loop by setting the process latch.
- *
- * The function follows PostgreSQL signal handling conventions:
- * - Saves and restores errno
- * - Uses only async-signal-safe operations
- * - Sets a flag that the main loop can check
+ * Signal handler for SIGTERM
+ *		Set a flag to let the main loop to terminate, and set our latch to wake
+ *		it up.
  */
 static void worker_sigterm(SIGNAL_ARGS) {
     int save_errno = errno;
@@ -105,19 +98,9 @@ static void worker_sigterm(SIGNAL_ARGS) {
 }
 
 /*
- * Signal handler for SIGHUP in background worker processes.
- *
- * This handler is called when the postmaster requests the background worker
- * to reload its configuration. It sets the got_sighup flag and wakes up the
- * main worker loop by setting the process latch.
- *
- * The actual configuration reload is performed later at a safe point in the
- * main loop via ProcessConfigFile(PGC_SIGHUP).
- *
- * The function follows PostgreSQL signal handling conventions:
- * - Saves and restores errno
- * - Uses only async-signal-safe operations
- * - Sets a flag that the main loop can check
+ * Signal handler for SIGHUP
+ *		Set a flag to tell the main loop to reread the config file, and set
+ *		our latch to wake it up.
  */
 static void worker_sighup(SIGNAL_ARGS) {
     int save_errno = errno;
