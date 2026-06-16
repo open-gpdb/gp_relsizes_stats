@@ -61,14 +61,15 @@ static int delete_data_in_history(void);
 static int put_data_into_history(void);
 void _PG_init(void);
 
-void relsizes_collect_stats(Datum main_arg);
-void relsizes_database_stats_job(Datum args);
+PGDLLEXPORT void relsizes_collect_stats(Datum main_arg);
+PGDLLEXPORT void relsizes_database_stats_job(Datum args);
 
 /* Global variables */
 static int worker_restart_naptime = 0;
 static int worker_database_naptime = 0;
 static int worker_file_naptime = 0;
 static bool enabled = false;
+static bool save_history = true;
 
 static volatile sig_atomic_t got_sigterm = false;
 static volatile sig_atomic_t got_sighup = false;
@@ -119,7 +120,7 @@ static void worker_sighup(SIGNAL_ARGS) {
  * Returns BGWH_STOPPED on success, BGWH_POSTMASTER_DIED on error/timeout.
  */
 static BgwHandleStatus WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle) {
-    BgwHandleStatus status;
+    BgwHandleStatus status = BGWH_NOT_YET_STARTED;
     int rc;
     bool save_set_latch_on_sigusr1;
     int attempts = 0;
@@ -430,10 +431,12 @@ void relsizes_database_stats_job(Datum args) {
         goto finish_spi;
     }
 
-    retcode = update_table_sizes_history();
-    if (retcode < 0) {
-        error = "relsizes_database_stats_job: updating tables sizes history table failed";
-        goto finish_spi;
+    if (save_history) {
+        retcode = update_table_sizes_history();
+        if (retcode < 0) {
+            error = "relsizes_database_stats_job: updating tables sizes history table failed";
+            goto finish_spi;
+        }
     }
 
 finish_spi:
@@ -907,6 +910,7 @@ Datum relsizes_collect_stats_once(PG_FUNCTION_ARGS) {
  *
  * GUC Parameters defined:
  * - gp_relsizes_stats.enabled: Enable/disable the background worker
+ * - gp_relsizes_stats.save_history: Enable saving table sizes to history table
  * - gp_relsizes_stats.restart_naptime: Delay between collection cycles (ms)
  * - gp_relsizes_stats.database_naptime: Delay between database processing (ms)
  * - gp_relsizes_stats.file_naptime: Delay between file processing (ms)
@@ -928,6 +932,10 @@ void _PG_init(void) {
     /* Define GUC variables */
     DefineCustomBoolVariable("gp_relsizes_stats.enabled", "Enable main background worker flag", NULL, &enabled, false,
                              PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+    DefineCustomBoolVariable("gp_relsizes_stats.save_history",
+                             "Enable saving table sizes to history table.",
+                             NULL, &save_history, true,
+                             PGC_SIGHUP, 0, NULL, NULL, NULL);
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,
                             &worker_restart_naptime,
                             6 * HOUR_TIME, /* 6 hours delay between collect-phases */
