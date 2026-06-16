@@ -44,7 +44,7 @@ gp_relsizes_stats configuration parameters:
 | **Parameter** | **Type**     | **Default**  | **Description**  |
 | ---------------- | --------------- | ------------ | ------------ |
 | `gp_relsizes_stats.enabled`              | bool    | false    | You can enable/disable background stats collection for database where extension installed (actually enable/disable background worker which collecting stats).|
-| `gp_relsizes_stats.save_history`         | bool    | false    | You can include the collection of statistics records in the history table (table_sizes_history).|
+| `gp_relsizes_stats.save_history`         | bool    | true    | You can disable the collection of statistics records in the history table (table_sizes_history).|
 | `gp_relsizes_stats.restart_naptime`      | int     | 21600000 | You can set naptime between each startup of collecting process. Value set time in milliseconds. Default is equal to 6 hours.|
 | `gp_relsizes_stats.database_naptime`     | int     | 0        | You can set naptime between collecting stats for each databases. Value set time in milliseconds. Default is equal to 0 milliseconds.|
 | `gp_relsizes_stats.file_naptime`         | int     | 1        | You can set naptime between each file stats calculating. Value set time in milliseconds. Default is equal to 1 millisecond.|

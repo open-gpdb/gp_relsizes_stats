@@ -18,9 +18,7 @@ INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALU
 ('Jane', 'Smith', 2, '1990-07-20'),
 ('Emily', 'Jones', 1, '1985-08-30');
 
--- Default is save_history = off — history don't write
-ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
-SELECT pg_reload_conf();
+-- Default is save_history = on — history write
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 
 SELECT size FROM relsizes_stats_schema.table_sizes_history WHERE relname = 'employees';
@@ -111,7 +109,7 @@ CREATE TABLE t_history_test (i INT) DISTRIBUTED BY (i);
 INSERT INTO t_history_test VALUES (1);
 
 -- Disable option - history should not write
-ALTER SYSTEM RESET gp_relsizes_stats.save_history;
+ALTER SYSTEM SET gp_relsizes_stats.save_history = off;
 SELECT pg_reload_conf();
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
 SELECT count(*) FROM relsizes_stats_schema.table_sizes_history

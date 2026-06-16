@@ -16,15 +16,7 @@ INSERT INTO employees (first_name, last_name, department_id, date_of_birth) VALU
 ('Jane', 'Smith', 2, '1990-07-20'),
 ('Emily', 'Jones', 1, '1985-08-30');
 INSERT 0 3
--- Default is save_history = off — history don't write
-ALTER SYSTEM SET gp_relsizes_stats.save_history = on;
-ALTER SYSTEM
-SELECT pg_reload_conf();
- pg_reload_conf 
-----------------
- t
-(1 row)
-
+-- Default is save_history = on — history write
 SELECT relsizes_stats_schema.relsizes_collect_stats_once();
  relsizes_collect_stats_once 
 -----------------------------
@@ -203,7 +195,7 @@ CREATE TABLE
 INSERT INTO t_history_test VALUES (1);
 INSERT 0 1
 -- Disable option - history should not write
-ALTER SYSTEM RESET gp_relsizes_stats.save_history;
+ALTER SYSTEM SET gp_relsizes_stats.save_history = off;
 ALTER SYSTEM
 SELECT pg_reload_conf();
  pg_reload_conf 

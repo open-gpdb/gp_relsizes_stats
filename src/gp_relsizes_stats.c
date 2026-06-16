@@ -69,7 +69,7 @@ static int worker_restart_naptime = 0;
 static int worker_database_naptime = 0;
 static int worker_file_naptime = 0;
 static bool enabled = false;
-static bool save_history = false;
+static bool save_history = true;
 
 static volatile sig_atomic_t got_sigterm = false;
 static volatile sig_atomic_t got_sighup = false;
@@ -934,7 +934,7 @@ void _PG_init(void) {
                              PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
     DefineCustomBoolVariable("gp_relsizes_stats.save_history",
                              "Enable saving table sizes to history table.",
-                             NULL, &save_history, false,
+                             NULL, &save_history, true,
                              PGC_SIGHUP, 0, NULL, NULL, NULL);
     DefineCustomIntVariable("gp_relsizes_stats.restart_naptime", "Duration between every collect-phases (in ms).", NULL,
                             &worker_restart_naptime,
